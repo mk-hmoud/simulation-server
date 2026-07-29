@@ -10,8 +10,11 @@ dist/
 data/*
 !data/.gitkeep
 
-# real COMSOL model files are binary and VM-local; register via the API, don't commit
+# real COMSOL model files are binary and VM-local; register via the API, don't commit.
+# exception: fixtures/spr_pcf_side_hole.mph is checked in on purpose as the example
+# model for M1 mph API exploration (tools/mph_explore.py) and future manifest work.
 *.mph
 !fixtures/README.md
+!fixtures/spr_pcf_side_hole.mph
 
 config/license.json

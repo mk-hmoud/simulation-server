@@ -1,6 +1,15 @@
 # fixtures
 
-`small_waveoptics.mph` needs to be added here before `tools/probe_license.py` /
+## spr_pcf_side_hole.mph
+
+Real example SPR-PCF model (side-hole design, built in COMSOL 6.1). Checked into
+git as an exception to the general `*.mph` ignore rule — this is the model used
+for M1 exploration (`tools/mph_explore.py`) and, eventually, the first model
+registered through the manifest system (plan §4).
+
+## small_waveoptics.mph
+
+Needs to be added here before `tools/probe_license.py` /
 `probe_license_driver.py` can run. Requirements (plan §1):
 
 - Uses the Wave Optics module (so solving it forces a module checkout, not just
