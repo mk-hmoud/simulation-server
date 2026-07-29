@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 from simserver import db, queue as q
@@ -118,3 +119,57 @@ def test_concurrent_claims_never_double_claim_the_same_job(tmp_path: Path) -> No
         t.join(timeout=10)
 
     assert sorted(claimed) == sorted(job_ids)
+
+
+def test_requeue_or_fail_requeues_with_backoff_when_attempts_remain(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+    q.claim_next_job(conn, "worker-1")
+
+    result = q.requeue_or_fail(conn, job_id, "infrastructure", "worker crashed", max_attempts=2, backoff_seconds=60)
+    assert result == "queued"
+
+    row = conn.execute(
+        "SELECT status, attempt, worker_id, started_at, not_before, error_class FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["status"] == "queued"
+    assert row["attempt"] == 2
+    assert row["worker_id"] is None
+    assert row["started_at"] is None
+    assert row["error_class"] == "infrastructure"
+    assert row["not_before"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+
+    # not claimable yet: not_before is in the future
+    assert q.claim_next_job(conn, "worker-2") is None
+
+
+def test_requeue_or_fail_permanently_fails_once_attempts_exhausted(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+    q.claim_next_job(conn, "worker-1")
+
+    q.requeue_or_fail(conn, job_id, "infrastructure", "first crash", max_attempts=2, backoff_seconds=0)
+    # claimable again immediately (backoff_seconds=0)
+    job = q.claim_next_job(conn, "worker-1")
+    assert job is not None
+
+    result = q.requeue_or_fail(conn, job_id, "infrastructure", "second crash", max_attempts=2, backoff_seconds=0)
+    assert result == "failed"
+
+    row = conn.execute("SELECT status, error_message FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == "failed"
+    assert row["error_message"] == "second crash"
+
+
+def test_claim_ignores_jobs_whose_not_before_has_passed(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+    q.claim_next_job(conn, "worker-1")
+    q.requeue_or_fail(conn, job_id, "infrastructure", "crash", max_attempts=5, backoff_seconds=0)
+
+    job = q.claim_next_job(conn, "worker-2")
+    assert job is not None
+    assert job.id == job_id

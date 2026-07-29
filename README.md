@@ -29,9 +29,21 @@ Built without a COMSOL license / VM access:
   expression. `DELETE /jobs/{id}` only handles the cheap queued-job case;
   killing a running job needs the supervisor (M5).
 
-Not yet built: supervisor (M5), the real `MphBackend` wiring (M6), mode
-selection / sweeps (M7), batches/dataset export (M8), service install/auth
-(M9).
+- `src/simserver/supervisor.py` — M5: spawns a fixed configured worker pool
+  (one at a time, failing loudly if one dies during its startup grace period
+  — no license-driven pool-size discovery, since concurrency was found to be
+  effectively unlimited and RAM/CPU is the actual bottleneck), monitors for
+  crashed workers and respawns them (waiting for confirmed process exit
+  first), enforces a per-model watchdog timeout by killing a worker's whole
+  process tree via `psutil` (parent + children, cross-platform), and
+  reconciles any job left `running` by a dead/killed worker back onto the
+  queue with a capped, backed-off retry (`queue.requeue_or_fail`) so a
+  reliably-hanging job fails permanently instead of looping forever. The
+  worker itself self-recycles past a configurable RSS threshold
+  (`--memory-threshold-mb`). `simserver supervisor --workers N ...` runs it.
+
+Not yet built: the real `MphBackend` wiring (M6), mode selection / sweeps
+(M7), batches/dataset export (M8), service install/auth (M9).
 
 ## Dev setup
 

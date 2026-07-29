@@ -41,6 +41,9 @@ class Manifest(BaseModel):
     mode_selection: ModeSelection | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     exports: list[str] = Field(default_factory=list)
+    # per-model watchdog timeout (plan §6): how long a running job may hold a
+    # worker before the supervisor kills the process tree and reclaims it
+    timeout_seconds: float = 600.0
 
 
 class ManifestValidationError(ValueError):

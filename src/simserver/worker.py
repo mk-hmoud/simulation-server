@@ -1,16 +1,19 @@
 """Single-worker claim/execute loop (plan §5.1), model-affinity aware (§5.2).
 
-No manifest validation or geometry-flag registry exists yet (that's M4); the
-geometry parameter names a model cares about come from the model's own
-manifest_json (parameters.<name>.geometry), which register_model just stores
-as an opaque blob for now.
+Job submissions are validated against a model's manifest at the API layer
+(M4) before they ever become a job row; the worker trusts params/outputs as
+already-resolved and only reads the manifest here for the geometry-flag set
+used to decide whether a rebuild is needed.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
+
+import psutil
 
 from . import queue as q
 from .backend.base import BackendError, ErrorClass, ModelHandle, SolverBackend
@@ -24,15 +27,18 @@ class Worker:
         worker_id: str,
         *,
         poll_interval: float = 0.5,
+        memory_threshold_bytes: int | None = None,
     ) -> None:
         self.conn = conn
         self.backend = backend
         self.worker_id = worker_id
         self.poll_interval = poll_interval
+        self.memory_threshold_bytes = memory_threshold_bytes
         self._loaded_model_id: str | None = None
         self._handle: ModelHandle | None = None
         self._last_params: dict[str, str] = {}
         self._geometry_params: set[str] = set()
+        self._process = psutil.Process(os.getpid())
 
     def _load_model_if_needed(self, model_id: str) -> None:
         if self._loaded_model_id == model_id:
@@ -80,7 +86,23 @@ class Worker:
             q.mark_failed(self.conn, job.id, ErrorClass.INFRASTRUCTURE.value, repr(exc))
         return True
 
+    def _should_recycle(self) -> bool:
+        """Recycle on memory threshold, not job count (plan §5.3): COMSOL's Java
+        heap grows across repeated loads/solves, and every restart costs a
+        license release + re-checkout + startup time, which is unhidden dead
+        time with few seats — so only recycle when RSS actually demands it."""
+        if self.memory_threshold_bytes is None:
+            return False
+        return self._process.memory_info().rss >= self.memory_threshold_bytes
+
     def run_forever(self) -> None:
         while True:
             if not self.process_one():
                 time.sleep(self.poll_interval)
+                continue
+            if self._should_recycle():
+                print(
+                    f"worker {self.worker_id}: RSS over threshold, exiting for recycle",
+                    flush=True,
+                )
+                return

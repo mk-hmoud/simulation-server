@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TEXT,
     finished_at TEXT,
     error_class TEXT,
-    error_message TEXT
+    error_message TEXT,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    not_before TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs (status, priority, created_at);

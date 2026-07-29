@@ -40,8 +40,21 @@ def cmd_enqueue(args: argparse.Namespace) -> None:
 
 def cmd_worker(args: argparse.Namespace) -> None:
     conn = _connect(args)
-    backend = FakeBackend()  # M3 scope: FakeBackend only; MphBackend wiring is M6
-    worker = Worker(conn, backend, worker_id=args.worker_id)
+    if args.backend == "mph":
+        from .backend import MphBackend
+
+        backend = MphBackend(cores=args.cores)  # still a stub until M6
+    else:
+        backend = FakeBackend()
+    memory_threshold_bytes = (
+        int(args.memory_threshold_mb * 1024 * 1024) if args.memory_threshold_mb is not None else None
+    )
+    worker = Worker(
+        conn,
+        backend,
+        worker_id=args.worker_id,
+        memory_threshold_bytes=memory_threshold_bytes,
+    )
     if args.once:
         processed = worker.process_one()
         print("processed a job" if processed else "queue was empty")
@@ -55,6 +68,24 @@ def cmd_jobs(args: argparse.Namespace) -> None:
     columns = "id, model_id, status, priority, worker_id, created_at, started_at, finished_at, error_class, error_message"
     for row in conn.execute(f"SELECT {columns} FROM jobs ORDER BY id"):
         print(dict(row))
+
+
+def cmd_supervisor(args: argparse.Namespace) -> None:
+    from .supervisor import Supervisor, SupervisorConfig
+
+    supervisor_config = SupervisorConfig(
+        db_path=args.db,
+        worker_count=args.workers,
+        backend=args.backend,
+        memory_threshold_mb=args.memory_threshold_mb,
+        default_watchdog_timeout_s=args.watchdog_timeout,
+        poll_interval_s=args.poll_interval,
+        startup_grace_s=args.startup_grace,
+        max_attempts=args.max_attempts,
+        retry_backoff_s=args.retry_backoff,
+    )
+    print(f"supervisor: bringing up {args.workers} worker(s) against {args.db} (Ctrl-C to stop)")
+    Supervisor(supervisor_config).run_forever()
 
 
 def cmd_results(args: argparse.Namespace) -> None:
@@ -89,7 +120,26 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("worker")
     p.add_argument("--worker-id", default="worker-1")
     p.add_argument("--once", action="store_true", help="process a single job and exit")
+    p.add_argument("--backend", choices=["fake", "mph"], default="fake")
+    p.add_argument("--cores", type=int, default=None, help="only used with --backend mph")
+    p.add_argument(
+        "--memory-threshold-mb",
+        type=float,
+        default=None,
+        help="exit for recycle once RSS exceeds this (plan §5.3); omit to never self-recycle",
+    )
     p.set_defaults(func=cmd_worker)
+
+    p = sub.add_parser("supervisor")
+    p.add_argument("--workers", type=int, default=1, help="fixed pool size (license isn't the bottleneck, RAM/CPU is)")
+    p.add_argument("--backend", choices=["fake", "mph"], default="fake")
+    p.add_argument("--memory-threshold-mb", type=float, default=2048.0)
+    p.add_argument("--watchdog-timeout", type=float, default=600.0, help="default if a model manifest omits timeout_seconds")
+    p.add_argument("--poll-interval", type=float, default=2.0)
+    p.add_argument("--startup-grace", type=float, default=15.0, help="seconds to confirm each worker survives startup")
+    p.add_argument("--max-attempts", type=int, default=2, help="total attempts before a job is permanently failed")
+    p.add_argument("--retry-backoff", type=float, default=30.0)
+    p.set_defaults(func=cmd_supervisor)
 
     p = sub.add_parser("jobs")
     p.set_defaults(func=cmd_jobs)

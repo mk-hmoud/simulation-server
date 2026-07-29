@@ -3,7 +3,7 @@ name = "simulation-server"
 version = "0.1.0"
 description = "HTTP job API for running COMSOL simulations (SPR-PCF mode analysis) via mph"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["psutil"]
 
 [project.scripts]
 simserver = "simserver.cli:main"

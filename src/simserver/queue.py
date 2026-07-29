@@ -73,17 +73,19 @@ def claim_next_job(
 ) -> ClaimedJob | None:
     conn.execute("BEGIN IMMEDIATE")
     try:
+        now = _now()
         row = conn.execute(
             """
             UPDATE jobs SET status='running', worker_id=?, started_at=?
             WHERE id = (
-              SELECT id FROM jobs WHERE status='queued'
+              SELECT id FROM jobs
+              WHERE status='queued' AND (not_before IS NULL OR not_before <= ?)
               ORDER BY (model_id = ?) DESC, priority DESC, created_at ASC
               LIMIT 1
             )
             RETURNING id, model_id, params_json, outputs_json, priority
             """,
-            (worker_id, _now(), preferred_model_id),
+            (worker_id, now, now, preferred_model_id),
         ).fetchone()
     except Exception:
         conn.execute("ROLLBACK")
@@ -154,6 +156,42 @@ def mark_failed(conn: sqlite3.Connection, job_id: int, error_class: str, error_m
         "UPDATE jobs SET status='failed', finished_at=?, error_class=?, error_message=? WHERE id=?",
         (_now(), error_class, error_message, job_id),
     )
+
+
+def list_running_jobs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, model_id, worker_id, started_at, attempt FROM jobs WHERE status='running'"
+    ).fetchall()
+
+
+def requeue_or_fail(
+    conn: sqlite3.Connection,
+    job_id: int,
+    error_class: str,
+    error_message: str,
+    *,
+    max_attempts: int = 2,
+    backoff_seconds: float = 30.0,
+) -> str:
+    """Reclaim a job left 'running' by a dead or watchdog-killed worker (plan §6).
+
+    Infrastructure failures retry with backoff, but capped at max_attempts
+    total attempts — a job that reliably kills its worker (e.g. a genuinely
+    hung solve) must not retry forever. Returns the resulting status, either
+    'queued' (will retry after the backoff) or 'failed' (attempts exhausted).
+    """
+    row = conn.execute("SELECT attempt FROM jobs WHERE id=?", (job_id,)).fetchone()
+    attempt = row["attempt"] if row else 1
+    if attempt < max_attempts:
+        not_before = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + backoff_seconds))
+        conn.execute(
+            "UPDATE jobs SET status='queued', worker_id=NULL, started_at=NULL, "
+            "attempt=attempt+1, not_before=?, error_class=?, error_message=? WHERE id=?",
+            (not_before, error_class, error_message, job_id),
+        )
+        return "queued"
+    mark_failed(conn, job_id, error_class, error_message)
+    return "failed"
 
 
 def write_result(
