@@ -7,6 +7,19 @@ git as an exception to the general `*.mph` ignore rule — this is the model use
 for M1 exploration (`tools/mph_explore.py`) and, eventually, the first model
 registered through the manifest system (plan §4).
 
+`spr_pcf_side_hole.manifest.json` (also checked in) is a real, registerable
+manifest for it — dev/M7 fixture, not production-validated. Register with:
+
+```
+simserver register-model spr_pcf_side_hole fixtures/spr_pcf_side_hole.mph \
+    --manifest fixtures/spr_pcf_side_hole.manifest.json
+```
+
+Its `mode_selection` uses `neff1`, the model's own Sellmeier silica-index
+formula, as the nearest-neff-to-target reference — a real usable target
+expression that happens to already exist in this model (see "M1 findings"
+below), not something added for this purpose.
+
 ### M1 findings (mph 1.3.1, COMSOL 6.2, run via tools/mph_explore.py)
 
 - `client.load` / `model.build()` / `.mesh()` / `.solve()` / `.evaluate()` all

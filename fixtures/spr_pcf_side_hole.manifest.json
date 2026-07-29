@@ -1,0 +1,23 @@
+{
+  "model_id": "spr_pcf_side_hole",
+  "description": "Example SPR-PCF side-hole model (M1/M7 dev fixture, not production-validated)",
+  "study": "std1",
+  "parameters": {
+    "l": {"unit": "um", "min": 0.5, "max": 2.0, "geometry": false},
+    "na": {"unit": "1", "min": 1.0, "max": 1.45, "geometry": false},
+    "p": {"unit": "um", "min": 1.0, "max": 3.0, "geometry": true},
+    "tg": {"unit": "nm", "min": 20, "max": 80, "geometry": true}
+  },
+  "sweep_parameter": "l",
+  "outputs": {
+    "neff_real": "real(emw.neff)",
+    "neff_imag": "imag(emw.neff)"
+  },
+  "mode_selection": {
+    "strategy": "nearest_neff_to_target",
+    "neff_output": "neff_real",
+    "neff_target_expression": "neff1"
+  },
+  "exports": [],
+  "timeout_seconds": 60
+}
