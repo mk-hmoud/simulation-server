@@ -55,6 +55,8 @@ def main() -> int:
     print(f"model loaded in {time.monotonic() - t0:.1f}s")
     dump_api("model", model)
 
+    print(f"\nparameters (as entered, unevaluated): {model.parameters()}")
+
     for kv in args.param:
         name, _, value = kv.partition("=")
         print(f"setting parameter {name} = {value}")
