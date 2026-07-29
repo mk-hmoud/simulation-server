@@ -72,13 +72,16 @@ def main() -> int:
     model.solve(args.study) if args.study else model.solve()
     print(f"solve() took {time.monotonic() - t0:.1f}s")
 
-    # dump the model's actual node names — the plan's manifest examples (ewfd.neff,
-    # sel_core, etc.) are illustrative, not verified against any real model, so this
-    # is how to find the real names before writing a manifest for this model
+    # dump the model's actual node names AND tags — the plan's manifest examples
+    # (ewfd.neff, sel_core, etc.) are illustrative, not verified against any real
+    # model. name() is the GUI label; tag() is what expressions actually reference
+    # (e.g. "ewfd" in "ewfd.neff"), and the two can differ, so both matter here.
     for kind in ("physics", "studies", "datasets", "solutions", "components", "selections", "functions"):
         try:
             names = getattr(model, kind)()
             print(f"{kind}: {names}")
+            for child in model / kind:
+                print(f"    name={child.name()!r} tag={child.tag()!r} type={child.type()!r}")
         except Exception as exc:  # noqa: BLE001
             print(f"{kind}: <failed to list: {exc!r}>")
 
