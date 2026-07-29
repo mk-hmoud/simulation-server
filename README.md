@@ -42,8 +42,18 @@ Built without a COMSOL license / VM access:
   worker itself self-recycles past a configurable RSS threshold
   (`--memory-threshold-mb`). `simserver supervisor --workers N ...` runs it.
 
-Not yet built: the real `MphBackend` wiring (M6), mode selection / sweeps
-(M7), batches/dataset export (M8), service install/auth (M9).
+- `src/simserver/backend/mph_backend.py` — M6: real `MphBackend`, implemented
+  against the confirmed `mph` API (M1 findings + reading `mph`'s own source
+  directly, which also confirmed `model.solve(study)`'s signature without
+  needing another VM round-trip). Error classification (license-keyword
+  heuristic → infrastructure, else solver/validation by phase) is not yet
+  verified against a real non-convergent solve or license failure — see the
+  module docstring. `tools/mph_backend_smoke.py` exercises the full
+  load→set_parameters→build→mesh→solve→evaluate→release contract against a
+  real model; not yet run in the VM.
+
+Not yet built: mode selection / sweeps (M7), batches/dataset export (M8),
+service install/auth (M9).
 
 ## Dev setup
 

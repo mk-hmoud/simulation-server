@@ -1,6 +1,6 @@
 from .base import BackendError, ErrorClass, ModelHandle, SolverBackend
 from .fake import FakeBackend, FakeModelHandle
-from .mph_backend import MphBackend
+from .mph_backend import MphBackend, MphModelHandle
 
 __all__ = [
     "SolverBackend",
@@ -10,4 +10,5 @@ __all__ = [
     "FakeBackend",
     "FakeModelHandle",
     "MphBackend",
+    "MphModelHandle",
 ]
