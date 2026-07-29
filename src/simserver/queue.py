@@ -36,6 +36,10 @@ def get_model(conn: sqlite3.Connection, model_id: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
 
 
+def list_models(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM models ORDER BY created_at").fetchall()
+
+
 def enqueue_job(
     conn: sqlite3.Connection,
     model_id: str,
@@ -96,6 +100,46 @@ def claim_next_job(
         outputs=json.loads(row["outputs_json"]) if row["outputs_json"] else {},
         priority=row["priority"],
     )
+
+
+def get_job(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+
+
+def list_results(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT output_name, sweep_index, sweep_value, value_real, value_imag "
+        "FROM results WHERE job_id = ? ORDER BY output_name, sweep_index",
+        (job_id,),
+    ).fetchall()
+
+
+def cancel_job(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Cancel a queued job. Returns False if the job doesn't exist or isn't queued.
+
+    Only the cheap case (plan §7): a running job needs its worker process
+    killed, which is supervisor territory (M5) and not implemented here.
+    """
+    cur = conn.execute(
+        "UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status='queued'",
+        (_now(), job_id),
+    )
+    return cur.rowcount > 0
+
+
+def queue_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    depth = {
+        row["status"]: row["n"]
+        for row in conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status")
+    }
+    running = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT id AS job_id, model_id, worker_id, started_at FROM jobs WHERE status='running' "
+            "ORDER BY started_at"
+        )
+    ]
+    return {"depth": depth, "running": running}
 
 
 def mark_done(conn: sqlite3.Connection, job_id: int) -> None:

@@ -6,12 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from . import db
+from . import config, db
 from . import queue as q
 from .backend import FakeBackend
 from .worker import Worker
-
-DEFAULT_DB_PATH = Path("data/jobs.db")
 
 
 def _connect(args: argparse.Namespace):
@@ -69,7 +67,7 @@ def cmd_results(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="simserver")
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="path to jobs.db")
+    parser.add_argument("--db", type=Path, default=config.DB_PATH, help="path to jobs.db")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init-db")

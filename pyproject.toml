@@ -10,8 +10,8 @@ simserver = "simserver.cli:main"
 
 [project.optional-dependencies]
 mph = ["mph"]
-api = ["fastapi", "uvicorn[standard]"]
-dev = ["pytest"]
+api = ["fastapi", "uvicorn[standard]", "python-multipart"]
+dev = ["pytest", "httpx"]
 
 [build-system]
 requires = ["setuptools>=68"]
