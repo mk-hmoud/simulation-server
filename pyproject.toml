@@ -5,6 +5,9 @@ description = "HTTP job API for running COMSOL simulations (SPR-PCF mode analysi
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+simserver = "simserver.cli:main"
+
 [project.optional-dependencies]
 mph = ["mph"]
 api = ["fastapi", "uvicorn[standard]"]

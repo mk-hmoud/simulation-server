@@ -15,10 +15,16 @@ Built without a COMSOL license / VM access:
   see `fixtures/README.md`) and only runs where `mph` + COMSOL are installed.
 - `tools/mph_explore.py` — M1 throwaway script to verify the real mph API
   against a real SPR-PCF model before building `MphBackend` on top of it.
+  Findings recorded in `fixtures/README.md` and the `MphBackend` docstring.
+- `src/simserver/db.py`, `queue.py`, `worker.py`, `cli.py` — M3: SQLite schema,
+  atomic model-affinity-preferring claim (`BEGIN IMMEDIATE` + `RETURNING`),
+  single worker loop against `FakeBackend`, and a `simserver` CLI
+  (`register-model` / `enqueue` / `worker` / `jobs` / `results`) to drive it
+  without HTTP.
 
-Not yet built: SQLite job schema/claim logic (M3), FastAPI layer (M4),
-supervisor (M5), the real `MphBackend` (M6), mode selection / sweeps (M7),
-batches/dataset export (M8), service install/auth (M9).
+Not yet built: FastAPI layer (M4), supervisor (M5), the real `MphBackend`
+wiring (M6), mode selection / sweeps (M7), batches/dataset export (M8),
+service install/auth (M9).
 
 ## Dev setup
 
