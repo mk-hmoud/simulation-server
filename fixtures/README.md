@@ -7,6 +7,31 @@ git as an exception to the general `*.mph` ignore rule — this is the model use
 for M1 exploration (`tools/mph_explore.py`) and, eventually, the first model
 registered through the manifest system (plan §4).
 
+### M1 findings (mph 1.3.1, COMSOL 6.2, run via tools/mph_explore.py)
+
+- `client.load` / `model.build()` / `.mesh()` / `.solve()` / `.evaluate()` all
+  work as the plan assumed. `build()`+`mesh()` are near-instant here (mesh
+  already cached in the file); `solve()` ~7-9s.
+- Physics interface tag is **`emw`**, not `ewfd` as the plan's illustrative
+  manifest example used — e.g. `real(emw.neff)`, not `real(ewfd.neff)`. Tag
+  depends on the model/COMSOL version; don't hardcode a physics prefix
+  anywhere, always read it from the model (`model.physics()` + `Node.tag()`).
+- Study 1 (`std1`) is solution type `Eigenfrequency` and returns **6 eigenmodes**
+  per solve. `model.evaluate('real(emw.neff)')` returns a plain `numpy.ndarray`
+  of shape `(6,)`, one value per mode — confirms (plan §11 open question) that
+  `evaluate()` alone is enough to retrieve all mode data; no need to drop to
+  the Java API for that part. Values for this model/params cluster tightly
+  (~1.4388-1.4429), i.e. genuinely ambiguous without a selection strategy.
+- **`model.selections()` is empty — this model has no named domain selections
+  at all.** The manifest's `core_power_fraction` mode-selection strategy (plan
+  §4) needs a domain selection (e.g. `sel_core`) to integrate mode power over,
+  which doesn't exist here yet. **Deferred**: this fixture can't drive
+  `core_power_fraction` mode selection until a core-domain selection (and an
+  integration coupling operator over it) is added to the model in the COMSOL
+  GUI. Until then, mode-selection work (M7) should implement/test against the
+  nearest-neff-to-target fallback instead, or use a different fixture that
+  already has the selection.
+
 ## small_waveoptics.mph
 
 Needs to be added here before `tools/probe_license.py` /
