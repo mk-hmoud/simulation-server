@@ -45,7 +45,17 @@ def _load_json_arg(inline: str, file_path: str | None) -> dict:
 def cmd_enqueue(args: argparse.Namespace) -> None:
     conn = _connect(args)
     params = _load_json_arg(args.params, args.params_file)
-    outputs = _load_json_arg(args.outputs, args.outputs_file)
+
+    if args.outputs is None and args.outputs_file is None:
+        # match the HTTP API's default (manifest.resolve_outputs(requested=None)):
+        # omitting outputs entirely means "all of them", not "none of them"
+        model_row = q.get_model(conn, args.model_id)
+        if model_row is None:
+            raise SystemExit(f"unknown model_id {args.model_id!r}")
+        outputs = json.loads(model_row["manifest_json"]).get("outputs", {})
+    else:
+        outputs = _load_json_arg(args.outputs or "{}", args.outputs_file)
+
     job_id = q.enqueue_job(conn, args.model_id, params, outputs=outputs, priority=args.priority)
     print(f"enqueued job {job_id}")
 
@@ -126,7 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("model_id")
     p.add_argument("--params", default="{}", help="JSON dict of parameter overrides")
     p.add_argument("--params-file", help="path to a JSON file, alternative to --params (avoids shell-quoting pain)")
-    p.add_argument("--outputs", default="{}", help="JSON dict of {output_name: expression}")
+    p.add_argument(
+        "--outputs",
+        default=None,
+        help="JSON dict of {output_name: expression}; omit (with --outputs-file too) for all manifest outputs",
+    )
     p.add_argument("--outputs-file", help="path to a JSON file, alternative to --outputs")
     p.add_argument("--priority", type=int, default=0)
     p.set_defaults(func=cmd_enqueue)
