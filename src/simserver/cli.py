@@ -30,10 +30,19 @@ def cmd_register_model(args: argparse.Namespace) -> None:
     print(f"registered model {args.model_id!r} -> {args.path}")
 
 
+def _load_json_arg(inline: str, file_path: str | None) -> dict:
+    # --*-file wins over the inline string when both/neither are given, since
+    # PowerShell mangles embedded double quotes when passing JSON to a native
+    # exe (backslash-escaping works but is painful) — a file sidesteps it
+    if file_path:
+        return json.loads(Path(file_path).read_text())
+    return json.loads(inline)
+
+
 def cmd_enqueue(args: argparse.Namespace) -> None:
     conn = _connect(args)
-    params = json.loads(args.params)
-    outputs = json.loads(args.outputs)
+    params = _load_json_arg(args.params, args.params_file)
+    outputs = _load_json_arg(args.outputs, args.outputs_file)
     job_id = q.enqueue_job(conn, args.model_id, params, outputs=outputs, priority=args.priority)
     print(f"enqueued job {job_id}")
 
@@ -113,7 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("enqueue")
     p.add_argument("model_id")
     p.add_argument("--params", default="{}", help="JSON dict of parameter overrides")
+    p.add_argument("--params-file", help="path to a JSON file, alternative to --params (avoids shell-quoting pain)")
     p.add_argument("--outputs", default="{}", help="JSON dict of {output_name: expression}")
+    p.add_argument("--outputs-file", help="path to a JSON file, alternative to --outputs")
     p.add_argument("--priority", type=int, default=0)
     p.set_defaults(func=cmd_enqueue)
 
