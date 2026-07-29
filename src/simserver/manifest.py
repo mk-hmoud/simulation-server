@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _VALUE_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:\[(.+)\])?\s*$")
 
@@ -27,6 +27,10 @@ class ParameterSpec(BaseModel):
 
 class ModeSelection(BaseModel):
     strategy: str
+    # name of a manifest `outputs` entry whose expression returns one value
+    # per eigenmode (e.g. "real(emw.neff)") — both strategies rank modes
+    # against this array, never against a hardcoded physics-tag expression
+    neff_output: str
     core_selection: str | None = None
     min_fraction: float | None = None
     neff_target_expression: str | None = None
@@ -44,6 +48,19 @@ class Manifest(BaseModel):
     # per-model watchdog timeout (plan §6): how long a running job may hold a
     # worker before the supervisor kills the process tree and reclaims it
     timeout_seconds: float = 600.0
+
+    @model_validator(mode="after")
+    def _check_mode_selection(self) -> "Manifest":
+        ms = self.mode_selection
+        if ms is None:
+            return self
+        if ms.neff_output not in self.outputs:
+            raise ValueError(f"mode_selection.neff_output {ms.neff_output!r} is not a declared output")
+        if ms.strategy == "nearest_neff_to_target" and not ms.neff_target_expression:
+            raise ValueError("mode_selection.strategy 'nearest_neff_to_target' requires neff_target_expression")
+        if ms.strategy == "core_power_fraction" and not ms.core_selection:
+            raise ValueError("mode_selection.strategy 'core_power_fraction' requires core_selection")
+        return self
 
 
 class ManifestValidationError(ValueError):

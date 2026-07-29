@@ -13,10 +13,11 @@ def make_worker(tmp_path: Path, **backend_kwargs) -> tuple[Worker, Path]:
     model_path = tmp_path / "model.mph"
     model_path.write_bytes(b"not a real model, just needs to exist")
     manifest = {
+        "model_id": "spr_pcf_v1",
         "parameters": {
-            "lambda0": {"geometry": False},
-            "pitch": {"geometry": True},
-        }
+            "lambda0": {"unit": "nm", "min": 500, "max": 2000, "geometry": False},
+            "pitch": {"unit": "um", "min": 1.0, "max": 5.0, "geometry": True},
+        },
     }
     q.register_model(conn, "spr_pcf_v1", str(model_path), manifest)
     worker = Worker(conn, FakeBackend(solve_seconds=0, mesh_seconds=0), worker_id="worker-1")
@@ -73,7 +74,7 @@ def test_simulated_non_convergence_marks_job_failed_solver(tmp_path: Path) -> No
     db.init_db(conn)
     model_path = tmp_path / "model.mph"
     model_path.write_bytes(b"stub")
-    q.register_model(conn, "m1", str(model_path))
+    q.register_model(conn, "m1", str(model_path), {"model_id": "m1", "parameters": {}})
     backend = FakeBackend(solve_seconds=0, mesh_seconds=0, non_convergence_rate=1.0, seed=0)
     worker = Worker(conn, backend, worker_id="worker-1")
     job_id = q.enqueue_job(conn, "m1", {})
@@ -130,3 +131,95 @@ def test_worker_reuses_loaded_model_across_jobs_of_the_same_model(tmp_path: Path
     worker.process_one()
 
     assert worker._handle is first_handle
+
+
+class ArrayBackend:
+    """Stub SolverBackend whose evaluate() returns per-mode arrays, to test
+    mode_selection wiring end to end through Worker.process_one() — unlike
+    FakeBackend, which only ever returns single scalars."""
+
+    def __init__(self, neff_values: list[float], target: float) -> None:
+        self.neff_values = neff_values
+        self.target = target
+        self.released: list[object] = []
+
+    def load(self, model_path):
+        return object()
+
+    def set_parameters(self, handle, params):
+        pass
+
+    def build_geometry(self, handle):
+        pass
+
+    def mesh(self, handle):
+        pass
+
+    def solve(self, handle, study):
+        pass
+
+    def evaluate(self, handle, expression: str):
+        if expression == "real(emw.neff)":
+            return list(self.neff_values)
+        if expression == "n_silica":
+            return self.target
+        raise AssertionError(f"unexpected expression: {expression!r}")
+
+    def export(self, handle, node, path):
+        pass
+
+    def release(self, handle):
+        self.released.append(handle)
+
+
+def test_process_one_with_mode_selection_writes_selected_mode_result_and_row(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "jobs.db")
+    db.init_db(conn)
+    model_path = tmp_path / "model.mph"
+    model_path.write_bytes(b"stub")
+    manifest = {
+        "model_id": "m1",
+        "parameters": {},
+        "outputs": {"neff_real": "real(emw.neff)"},
+        "mode_selection": {
+            "strategy": "nearest_neff_to_target",
+            "neff_output": "neff_real",
+            "neff_target_expression": "n_silica",
+        },
+    }
+    q.register_model(conn, "m1", str(model_path), manifest)
+    backend = ArrayBackend(neff_values=[1.30, 1.44, 1.50], target=1.45)
+    worker = Worker(conn, backend, worker_id="worker-1")
+    job_id = q.enqueue_job(conn, "m1", {}, outputs={"neff_real": "real(emw.neff)"})
+
+    worker.process_one()
+
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == "done"
+
+    result = conn.execute(
+        "SELECT value_real FROM results WHERE job_id=? AND output_name='neff_real'", (job_id,)
+    ).fetchone()
+    assert result["value_real"] == 1.44  # index 1, nearest to target 1.45
+
+    mode_rows = q.list_mode_selection(conn, job_id)
+    assert len(mode_rows) == 1
+    assert mode_rows[0]["strategy"] == "nearest_neff_to_target"
+    assert mode_rows[0]["n_modes_considered"] == 3
+
+
+def test_process_one_multivalued_output_without_mode_selection_is_validation_error(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "jobs.db")
+    db.init_db(conn)
+    model_path = tmp_path / "model.mph"
+    model_path.write_bytes(b"stub")
+    q.register_model(conn, "m1", str(model_path), {"model_id": "m1", "parameters": {}})
+    backend = ArrayBackend(neff_values=[1.30, 1.44, 1.50], target=1.45)
+    worker = Worker(conn, backend, worker_id="worker-1")
+    job_id = q.enqueue_job(conn, "m1", {}, outputs={"neff_real": "real(emw.neff)"})
+
+    worker.process_one()
+
+    row = conn.execute("SELECT status, error_class FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == "failed"
+    assert row["error_class"] == "validation"

@@ -212,3 +212,27 @@ def write_result(
         "VALUES (?, ?, ?, ?, ?, ?)",
         (job_id, output_name, sweep_index, sweep_value, value_real, value_imag),
     )
+
+
+def write_mode_selection(
+    conn: sqlite3.Connection,
+    job_id: int,
+    strategy: str,
+    n_modes_considered: int,
+    *,
+    sweep_index: int = 0,
+    core_fraction: float | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO mode_selection (job_id, sweep_index, strategy, core_fraction, n_modes_considered) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (job_id, sweep_index, strategy, core_fraction, n_modes_considered),
+    )
+
+
+def list_mode_selection(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT sweep_index, strategy, core_fraction, n_modes_considered FROM mode_selection "
+        "WHERE job_id = ? ORDER BY sweep_index",
+        (job_id,),
+    ).fetchall()

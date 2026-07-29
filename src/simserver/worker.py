@@ -17,6 +17,21 @@ import psutil
 
 from . import queue as q
 from .backend.base import BackendError, ErrorClass, ModelHandle, SolverBackend
+from .manifest import Manifest
+from .mode_selection import select_mode
+
+
+def _scalar_size(value) -> int:
+    size = getattr(value, "size", None)
+    if size is not None:
+        return int(size)
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return 1
+
+
+def _to_native(value):
+    return value.item() if hasattr(value, "item") else value
 
 
 class Worker:
@@ -38,6 +53,7 @@ class Worker:
         self._handle: ModelHandle | None = None
         self._last_params: dict[str, str] = {}
         self._geometry_params: set[str] = set()
+        self._manifest: Manifest | None = None
         self._process = psutil.Process(os.getpid())
 
     def _load_model_if_needed(self, model_id: str) -> None:
@@ -49,9 +65,9 @@ class Worker:
         model_row = q.get_model(self.conn, model_id)
         if model_row is None:
             raise BackendError(f"unknown model_id: {model_id!r}", ErrorClass.VALIDATION)
-        manifest = json.loads(model_row["manifest_json"])
+        self._manifest = Manifest.model_validate(json.loads(model_row["manifest_json"]))
         self._geometry_params = {
-            name for name, spec in manifest.get("parameters", {}).items() if spec.get("geometry")
+            name for name, spec in self._manifest.parameters.items() if spec.geometry
         }
         self._handle = self.backend.load(Path(model_row["path"]))
         self._loaded_model_id = model_id
@@ -59,6 +75,18 @@ class Worker:
 
     def _needs_rebuild(self, params: dict[str, str]) -> bool:
         return any(params.get(name) != self._last_params.get(name) for name in self._geometry_params)
+
+    def _resolve_output_value(self, raw, selected_index: int | None):
+        size = _scalar_size(raw)
+        if size == 1:
+            return _to_native(raw)
+        if selected_index is None:
+            raise BackendError(
+                f"expression returned {size} values (per-mode array) but no mode_selection "
+                "is configured in the manifest to pick one",
+                ErrorClass.VALIDATION,
+            )
+        return _to_native(raw[selected_index])
 
     def process_one(self) -> bool:
         """Claim and run a single job. Returns False if the queue was empty."""
@@ -76,8 +104,21 @@ class Worker:
             self.backend.solve(self._handle, study=None)
             self._last_params = dict(job.params)
 
+            selected_index: int | None = None
+            if self._manifest.mode_selection is not None:
+                mode_result = select_mode(self.backend, self._handle, self._manifest)
+                selected_index = mode_result.selected_index
+                q.write_mode_selection(
+                    self.conn,
+                    job.id,
+                    mode_result.strategy,
+                    mode_result.n_modes_considered,
+                    core_fraction=mode_result.core_fraction,
+                )
+
             for name, expression in job.outputs.items():
-                value = self.backend.evaluate(self._handle, expression)
+                raw = self.backend.evaluate(self._handle, expression)
+                value = self._resolve_output_value(raw, selected_index)
                 q.write_result(self.conn, job.id, name, value)
             q.mark_done(self.conn, job.id)
         except BackendError as exc:
