@@ -21,6 +21,13 @@ Node names vs. tags: model.physics()/.studies()/etc. return GUI *labels*
 ("Electromagnetic Waves, Frequency Domain"), not the tags expressions use
 ("emw"). Never hardcode a physics prefix like "ewfd" — it varies per model.
 
+Confirmed live in the VM (M6): mph.start() spawns comsolmphserver.exe as a
+genuine OS-level child process of the Python worker (verified via
+Get-CimInstance Win32_Process: the server's ParentProcessId matched the
+worker's own pid exactly). The supervisor's existing psutil-based recursive
+process-tree kill (supervisor.py) therefore already reaches and releases it
+on a watchdog timeout — no separate release step needed.
+
 Error classification (plan §6) is a best-effort heuristic, not yet verified
 against a real failure: mph doesn't define its own exception types for
 COMSOL/Java-layer errors, it lets whatever JPype wrapped the Java exception
@@ -36,10 +43,6 @@ first if failures come back misclassified in production.
 
 Still to confirm empirically (in the VM, ideally by deliberately provoking
 each failure mode once):
-  - whether mph.start() launches an external COMSOL server subprocess or runs
-    in-process — this determines whether a supervisor kill of the worker
-    process needs a separate step to release the license, or whether killing
-    the process tree is sufficient (see plan §5.3, §6 watchdog).
   - what a real non-convergent solve actually raises, to check the "solver"
     default classification is right rather than a guess.
   - what a real license-checkout failure actually raises, to check the

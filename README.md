@@ -45,12 +45,16 @@ Built without a COMSOL license / VM access:
 - `src/simserver/backend/mph_backend.py` — M6: real `MphBackend`, implemented
   against the confirmed `mph` API (M1 findings + reading `mph`'s own source
   directly, which also confirmed `model.solve(study)`'s signature without
-  needing another VM round-trip). Error classification (license-keyword
-  heuristic → infrastructure, else solver/validation by phase) is not yet
-  verified against a real non-convergent solve or license failure — see the
-  module docstring. `tools/mph_backend_smoke.py` exercises the full
-  load→set_parameters→build→mesh→solve→evaluate→release contract against a
-  real model; not yet run in the VM.
+  needing another VM round-trip). Verified live in the VM via
+  `tools/mph_backend_smoke.py`: the full load→set_parameters→build→mesh→
+  solve→evaluate→release contract works against the real fixture, and the
+  `neff` values match the raw `mph_explore.py` run exactly. Also confirmed
+  live: `mph.start()` spawns `comsolmphserver.exe` as a genuine child process
+  of the worker, so the supervisor's existing `psutil` process-tree kill
+  already reaches it on a watchdog timeout — no extra release step needed.
+  Error classification (license-keyword heuristic → infrastructure, else
+  solver/validation by phase) is still unverified against a real
+  non-convergent solve or license failure — see the module docstring.
 
 Not yet built: mode selection / sweeps (M7), batches/dataset export (M8),
 service install/auth (M9).
