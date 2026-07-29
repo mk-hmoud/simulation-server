@@ -35,7 +35,10 @@ def _load_json_arg(inline: str, file_path: str | None) -> dict:
     # PowerShell mangles embedded double quotes when passing JSON to a native
     # exe (backslash-escaping works but is painful) — a file sidesteps it
     if file_path:
-        return json.loads(Path(file_path).read_text())
+        # utf-8-sig strips a BOM if present (e.g. PowerShell's `>`/Out-File
+        # default encoding) and is a no-op otherwise — plain read_text() would
+        # choke on a BOM-prefixed file with a confusing JSONDecodeError
+        return json.loads(Path(file_path).read_text(encoding="utf-8-sig"))
     return json.loads(inline)
 
 
