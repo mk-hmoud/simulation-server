@@ -31,6 +31,27 @@ registered through the manifest system (plan §4).
   GUI. Until then, mode-selection work (M7) should implement/test against the
   nearest-neff-to-target fallback instead, or use a different fixture that
   already has the selection.
+- `model.parameters()` confirmed: returns `{name: value_str}` as entered in the
+  GUI (units included, e.g. `'1.8[um]'`), not evaluated. `model.parameter(name,
+  value)` sets one. Real parameter names on this model, and their mapping to
+  the plan's illustrative manifest names:
+
+  | real name | plan's example name | role |
+  |---|---|---|
+  | `l` (`0.65[um]`) | `lambda0` | wavelength — non-geometry, sweep parameter |
+  | `na` (`1.33`) | `n_analyte` | analyte index — non-geometry |
+  | `p` (`1.8[um]`) | `pitch` | hole pitch — geometry |
+  | `d1`/`d2`/`d3`/`dc` (fractions of `p`) | `d_hole` | hole diameters — geometry |
+  | `tg` (`40[nm]`) | `t_gold` | gold coating thickness — geometry |
+
+  `A1..B3`/`neff1` are a silica Sellmeier dispersion formula; `einf..kau` are a
+  Drude-Lorentz gold dispersion model. Both are derived/material parameters,
+  not job-facing inputs — a manifest for this model should not expose them.
+- Geometry-flag mesh-skip optimization (plan §4 "the geometry flag matters") is
+  real but modest on this fixture: changing `l` (non-geometry) left `mesh()` at
+  0.0s; changing `p` (geometry) pushed it to 0.4s. This is a *coarse* fixture
+  used for cheap iteration — expect a much bigger gap on a real fine-mesh PCF
+  cross-section, which is exactly why the plan calls this out as high-value.
 
 ## small_waveoptics.mph
 
