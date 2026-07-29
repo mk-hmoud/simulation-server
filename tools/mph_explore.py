@@ -72,13 +72,26 @@ def main() -> int:
     model.solve(args.study) if args.study else model.solve()
     print(f"solve() took {time.monotonic() - t0:.1f}s")
 
+    # dump the model's actual node names — the plan's manifest examples (ewfd.neff,
+    # sel_core, etc.) are illustrative, not verified against any real model, so this
+    # is how to find the real names before writing a manifest for this model
+    for kind in ("physics", "studies", "datasets", "solutions", "components", "selections", "functions"):
+        try:
+            names = getattr(model, kind)()
+            print(f"{kind}: {names}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"{kind}: <failed to list: {exc!r}>")
+
     if args.expression:
-        result = model.evaluate(args.expression)
-        print(f"\nevaluate({args.expression!r}) -> {result!r} (type={type(result)!r})")
-        # if this is a Wave Optics mode analysis, evaluate() may return multiple
-        # eigenmodes at once — check whether the result shape lets core-power-fraction
-        # mode selection (plan §4) be computed from evaluate() alone, or whether it
-        # needs a lower-level Java-API escape hatch (plan §11, open question)
+        try:
+            result = model.evaluate(args.expression)
+            print(f"\nevaluate({args.expression!r}) -> {result!r} (type={type(result)!r}, shape={getattr(result, 'shape', None)})")
+            # if this is a Wave Optics mode analysis, evaluate() may return multiple
+            # eigenmodes at once — check whether the result shape lets core-power-fraction
+            # mode selection (plan §4) be computed from evaluate() alone, or whether it
+            # needs a lower-level Java-API escape hatch (plan §11, open question)
+        except Exception as exc:  # noqa: BLE001 - report and keep going so the node dump above is still useful
+            print(f"\nevaluate({args.expression!r}) FAILED: {exc!r}")
 
     client.remove(model)
     print("\ndone — record any signature differences from the plan's assumed API in the plan doc")
