@@ -97,7 +97,14 @@ def main() -> int:
         raise
     print(f"solve took {time.monotonic() - t0:.1f}s")
 
-    print(f"\n--- evaluate({args.expression!r}) with no outer= (default) ---")
+    print("\n--- datasets/solutions after the sweep solve (was there just one before?) ---")
+    for kind in ("datasets", "solutions"):
+        names = getattr(model, kind)()
+        print(f"{kind}: {names}")
+        for child in model / kind:
+            print(f"    name={child.name()!r} tag={child.tag()!r} type={child.type()!r}")
+
+    print(f"\n--- evaluate({args.expression!r}) with no dataset/outer= (default) ---")
     result = model.evaluate(args.expression)
     print(f"type={type(result)!r} shape={getattr(result, 'shape', None)!r}")
     print(result)
@@ -109,6 +116,18 @@ def main() -> int:
             print(f"shape={getattr(result_i, 'shape', None)!r} -> {result_i!r}")
         except Exception as exc:  # noqa: BLE001
             print(f"evaluate(outer={i}) FAILED: {exc!r}")
+
+    # if a dataset besides the original "Study 1//Solution 1" now exists
+    # (e.g. a "Parametric Solutions" node), try evaluating against it directly
+    # instead of guessing at outer= semantics against the wrong dataset
+    for name in model.datasets():
+        if "Solution 1" not in name or "Parametric" in name:
+            print(f"\n--- evaluate({args.expression!r}, dataset={name!r}) ---")
+            try:
+                result_ds = model.evaluate(args.expression, dataset=name)
+                print(f"shape={getattr(result_ds, 'shape', None)!r} -> {result_ds!r}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"evaluate(dataset={name!r}) FAILED: {exc!r}")
 
     sweep.remove()
     client.remove(model)
