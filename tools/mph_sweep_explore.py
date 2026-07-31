@@ -37,7 +37,19 @@ def main() -> int:
     client = mph.start(cores=1)
     model = client.load(args.model_path)
 
-    study = model / "studies" / args.study
+    # model/'studies'/name matches by NAME (the GUI label), not tag — passing
+    # a tag like "std1" silently builds a reference to a non-existent node
+    # instead of erroring (Node() construction is lazy/unchecked), so look it
+    # up by tag explicitly instead of assuming name == tag
+    study = None
+    for candidate in model / "studies":
+        if candidate.tag() == args.study:
+            study = candidate
+            break
+    if study is None:
+        available = [(c.name(), c.tag()) for c in model / "studies"]
+        raise SystemExit(f"no study with tag {args.study!r} found; available (name, tag): {available}")
+
     print("--- study node tree before sweep setup ---")
     dump_tree(study)
 
