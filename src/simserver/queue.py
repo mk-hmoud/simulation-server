@@ -43,7 +43,7 @@ def list_models(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def enqueue_job(
     conn: sqlite3.Connection,
     model_id: str,
-    params: dict[str, str],
+    params: dict[str, str | list[str]],
     *,
     batch_id: str | None = None,
     outputs: dict[str, str] | None = None,
@@ -61,7 +61,7 @@ def enqueue_job(
 class ClaimedJob:
     id: int
     model_id: str
-    params: dict[str, str]
+    params: dict[str, str | list[str]]
     outputs: dict[str, str]
     priority: int
 

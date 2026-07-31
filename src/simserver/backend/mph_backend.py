@@ -55,6 +55,29 @@ each failure mode once):
   - core_power_fraction mode selection needs a domain selection to integrate
     over; the checked-in fixture has none (model.selections() == []), so this
     is unverified against a real model — see fixtures/README.md.
+
+In-COMSOL sweeps (plan §7), confirmed live via tools/mph_sweep_explore.py:
+  - a "Parametric Sweep" study extension is a feature node created directly
+    on the study (Study.create('Parametric')), not nested under a separate
+    container — its real property names are pname (list of parameter names)
+    and plistarr (one value-list per parameter; COMSOL auto-normalizes
+    unit-bearing strings like '0.8[um]' to base SI internally). plist (flat
+    float array) exists too but wasn't the one that worked.
+  - solving the study with the sweep feature enabled just works via the
+    normal model.solve(study) call — no separate "run sweep" step.
+  - the DEFAULT dataset ("Study 1//Solution 1") only ever reflects the LAST
+    solved sweep point, not all of them — evaluating against it after a
+    sweep silently gives you one point's data with no indication anything
+    is missing. All points live in a second dataset COMSOL creates,
+    "Study 1//Parametric Solutions 1", which evaluate(expr, dataset=...)
+    returns as a flat array of length n_sweep_points * n_modes (outer-major:
+    all modes for point 0, then point 1, etc.) — reshape (n_sweep, n_modes)
+    to recover the 2D structure. Cross-checked against a real value: the
+    middle third of an 18-length (3 points x 6 modes) result for l in
+    [0.6, 0.8, 1.0][um] matched a standalone l=0.8[um] solve exactly.
+  - passing outer=<int> against the default dataset was a dead end (only
+    outer=1 didn't raise FlException('Invalid_property_value'), and it just
+    returned the same last-point data as no outer= at all) — not used here.
 """
 
 from __future__ import annotations
@@ -66,6 +89,8 @@ from .base import BackendError, ErrorClass
 
 T = TypeVar("T")
 
+_PARAMETRIC_SOLUTIONS_MARKER = "Parametric Solutions"
+
 _LICENSE_KEYWORDS = ("license", "checkout", "flexlm", "feature", "seat")
 
 
@@ -76,10 +101,12 @@ def _classify(exc: Exception, *, default: ErrorClass) -> ErrorClass:
 
 
 class MphModelHandle:
-    __slots__ = ("model",)
+    __slots__ = ("model", "sweep_node", "sweep_active")
 
     def __init__(self, model: Any) -> None:
         self.model = model
+        self.sweep_node = None  # cached "Parametric" feature Node, created lazily and reused
+        self.sweep_active = False  # whether the sweep is enabled for the *next* solve
 
 
 class MphBackend:
@@ -140,8 +167,60 @@ class MphBackend:
                 return candidate
         raise BackendError(f"no study with tag {tag!r}", ErrorClass.VALIDATION)
 
+    @staticmethod
+    def _only_study(model: Any):
+        studies = list(model / "studies")
+        if len(studies) != 1:
+            raise BackendError(
+                f"configure_sweep needs an explicit study tag when the model has {len(studies)} studies",
+                ErrorClass.VALIDATION,
+            )
+        return studies[0]
+
+    def _sweep_node(self, handle: MphModelHandle, study: str | None):
+        if handle.sweep_node is None:
+            target = self._resolve_study(handle.model, study) if study else self._only_study(handle.model)
+            handle.sweep_node = target.create("Parametric")
+        return handle.sweep_node
+
+    def configure_sweep(
+        self, handle: MphModelHandle, param_name: str, values: list[str], study: str | None = None
+    ) -> None:
+        def _configure() -> None:
+            node = self._sweep_node(handle, study)
+            node.property("pname", [param_name])
+            node.property("plistarr", [list(values)])
+            node.toggle("on")
+            handle.sweep_active = True
+
+        self._run(_configure, "configure_sweep", default=ErrorClass.VALIDATION)
+
+    def disable_sweep(self, handle: MphModelHandle) -> None:
+        def _disable() -> None:
+            if handle.sweep_node is not None:
+                handle.sweep_node.toggle("off")
+            handle.sweep_active = False
+
+        self._run(_disable, "disable_sweep", default=ErrorClass.SOLVER)
+
+    @staticmethod
+    def _sweep_dataset_name(model: Any) -> str:
+        for name in model.datasets():
+            if _PARAMETRIC_SOLUTIONS_MARKER in name:
+                return name
+        raise BackendError(
+            "sweep is active but no 'Parametric Solutions' dataset was found after solving",
+            ErrorClass.INFRASTRUCTURE,
+        )
+
     def evaluate(self, handle: MphModelHandle, expression: str) -> Any:
-        return self._run(lambda: handle.model.evaluate(expression), "evaluate", default=ErrorClass.VALIDATION)
+        def _evaluate():
+            if handle.sweep_active:
+                dataset = self._sweep_dataset_name(handle.model)
+                return handle.model.evaluate(expression, dataset=dataset)
+            return handle.model.evaluate(expression)
+
+        return self._run(_evaluate, "evaluate", default=ErrorClass.VALIDATION)
 
     def export(self, handle: MphModelHandle, node: str, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

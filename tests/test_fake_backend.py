@@ -84,3 +84,33 @@ def test_different_parameters_change_evaluate_result(model_path: Path) -> None:
     v2 = backend.evaluate(handle, "real(ewfd.neff)")
 
     assert v1 != v2
+
+
+def test_configure_sweep_makes_evaluate_return_one_value_per_point(model_path: Path) -> None:
+    backend = FakeBackend(solve_seconds=0, mesh_seconds=0)
+    handle = backend.load(model_path)
+    backend.build_geometry(handle)
+    backend.mesh(handle)
+    backend.configure_sweep(handle, "lambda0", ["1550[nm]", "1560[nm]", "1570[nm]"])
+    backend.solve(handle, study=None)
+
+    values = backend.evaluate(handle, "real(ewfd.neff)")
+
+    assert isinstance(values, list)
+    assert len(values) == 3
+    assert len(set(values)) == 3  # each sweep point varies the parameter, so all differ
+
+
+def test_disable_sweep_reverts_evaluate_to_a_single_scalar(model_path: Path) -> None:
+    backend = FakeBackend(solve_seconds=0, mesh_seconds=0)
+    handle = backend.load(model_path)
+    backend.build_geometry(handle)
+    backend.mesh(handle)
+    backend.configure_sweep(handle, "lambda0", ["1550[nm]", "1560[nm]"])
+    backend.solve(handle, study=None)
+    assert isinstance(backend.evaluate(handle, "real(ewfd.neff)"), list)
+
+    backend.disable_sweep(handle)
+    backend.solve(handle, study=None)
+
+    assert isinstance(backend.evaluate(handle, "real(ewfd.neff)"), float)

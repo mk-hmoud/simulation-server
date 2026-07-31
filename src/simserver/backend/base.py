@@ -34,6 +34,23 @@ class SolverBackend(Protocol):
 
     def solve(self, handle: ModelHandle, study: str | None) -> None: ...
 
+    def configure_sweep(
+        self, handle: ModelHandle, param_name: str, values: list[str], study: str | None = None
+    ) -> None:
+        """Set up an in-COMSOL parametric sweep over one parameter (plan §7
+        "Sweeps"), attached to `study` (a tag) or the model's only study if
+        there's exactly one and `study` is omitted. Idempotent: safe to call
+        again with different values on an already-swept handle. Must be
+        paired with disable_sweep() before a subsequent non-swept job reuses
+        the same loaded model — the swept state otherwise persists across
+        solves."""
+        ...
+
+    def disable_sweep(self, handle: ModelHandle) -> None:
+        """Turn off a previously configured sweep (no-op if none is active),
+        so the next solve() on this handle is a plain single-point solve."""
+        ...
+
     def evaluate(self, handle: ModelHandle, expression: str) -> Any: ...
 
     def export(self, handle: ModelHandle, node: str, path: Path) -> None: ...

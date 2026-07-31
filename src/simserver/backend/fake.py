@@ -16,6 +16,7 @@ class FakeModelHandle:
     geometry_built: bool = False
     meshed: bool = False
     solved: bool = False
+    sweep: tuple[str, list[str]] | None = None  # (param_name, values) if configure_sweep() was called and not since disabled
 
 
 class FakeBackend:
@@ -65,13 +66,31 @@ class FakeBackend:
             raise BackendError("simulated non-convergence", ErrorClass.SOLVER)
         handle.solved = True
 
+    def configure_sweep(
+        self, handle: FakeModelHandle, param_name: str, values: list[str], study: str | None = None
+    ) -> None:
+        handle.sweep = (param_name, list(values))
+
+    def disable_sweep(self, handle: FakeModelHandle) -> None:
+        handle.sweep = None
+
+    def _synthetic_value(self, expression: str, parameters: dict[str, str]) -> float:
+        digest = hash((expression, tuple(sorted(parameters.items()))))
+        return 1.44 + (digest % 1_000_000) / 1e8
+
     def evaluate(self, handle: FakeModelHandle, expression: str) -> Any:
         if not handle.solved:
             raise BackendError("evaluate() called before solve()", ErrorClass.VALIDATION)
         # deterministic synthetic value derived from expression + current parameters,
         # so repeated evaluate() calls on the same state return the same number
-        digest = hash((expression, tuple(sorted(handle.parameters.items()))))
-        return 1.44 + (digest % 1_000_000) / 1e8
+        if handle.sweep is None:
+            return self._synthetic_value(expression, handle.parameters)
+        # one synthetic value per sweep point, each varying with that point's value
+        param_name, values = handle.sweep
+        return [
+            self._synthetic_value(expression, {**handle.parameters, param_name: value})
+            for value in values
+        ]
 
     def export(self, handle: FakeModelHandle, node: str, path: Path) -> None:
         if not handle.solved:

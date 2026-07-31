@@ -67,32 +67,62 @@ class ManifestValidationError(ValueError):
     pass
 
 
-def validate_params(manifest: Manifest, params: dict[str, str]) -> None:
+def parse_magnitude(raw: str) -> float:
+    """Extract the bare numeric magnitude from a value string like '0.8[um]'
+    (no unit conversion — just the number as written, for storage/reporting,
+    e.g. results.sweep_value)."""
+    match = _VALUE_RE.match(raw)
+    if not match:
+        raise ManifestValidationError(f"cannot parse value {raw!r}")
+    return float(match.group(1))
+
+
+def _validate_one_value(manifest: Manifest, name: str, spec: ParameterSpec, raw: str) -> None:
+    match = _VALUE_RE.match(raw)
+    if not match:
+        raise ManifestValidationError(f"parameter {name!r}: cannot parse value {raw!r}")
+    magnitude = float(match.group(1))
+    unit = match.group(2)
+    if unit is not None and unit != spec.unit:
+        raise ManifestValidationError(
+            f"parameter {name!r}: unit {unit!r} does not match manifest unit {spec.unit!r}"
+        )
+    if not (spec.min <= magnitude <= spec.max):
+        raise ManifestValidationError(
+            f"parameter {name!r}: value {magnitude} outside allowed range "
+            f"[{spec.min}, {spec.max}] {spec.unit}"
+        )
+
+
+def validate_params(manifest: Manifest, params: dict[str, str | list[str]]) -> None:
     """Raise ManifestValidationError if any parameter is unknown or out of range.
 
     Values are matched against the manifest's declared unit by exact string
     match (e.g. "um" must be spelled "um", not converted from "mm") — there is
     no unit-conversion engine here, only a range check on the numeric magnitude.
+
+    A list value (plan §7 "Sweeps": an in-COMSOL parametric sweep instead of N
+    jobs) is only accepted for manifest.sweep_parameter; every other parameter
+    must be a single value. Each element of a sweep list is validated the same
+    way a scalar value would be.
     """
     for name, raw in params.items():
         spec = manifest.parameters.get(name)
         if spec is None:
             raise ManifestValidationError(f"unknown parameter {name!r} for model {manifest.model_id!r}")
 
-        match = _VALUE_RE.match(raw)
-        if not match:
-            raise ManifestValidationError(f"parameter {name!r}: cannot parse value {raw!r}")
-        magnitude = float(match.group(1))
-        unit = match.group(2)
-        if unit is not None and unit != spec.unit:
-            raise ManifestValidationError(
-                f"parameter {name!r}: unit {unit!r} does not match manifest unit {spec.unit!r}"
-            )
-        if not (spec.min <= magnitude <= spec.max):
-            raise ManifestValidationError(
-                f"parameter {name!r}: value {magnitude} outside allowed range "
-                f"[{spec.min}, {spec.max}] {spec.unit}"
-            )
+        if isinstance(raw, list):
+            if name != manifest.sweep_parameter:
+                raise ManifestValidationError(
+                    f"parameter {name!r}: a list of values is only allowed for the manifest's "
+                    f"sweep_parameter ({manifest.sweep_parameter!r})"
+                )
+            if not raw:
+                raise ManifestValidationError(f"parameter {name!r}: sweep value list must not be empty")
+            for value in raw:
+                _validate_one_value(manifest, name, spec, value)
+        else:
+            _validate_one_value(manifest, name, spec, raw)
 
 
 def resolve_outputs(manifest: Manifest, requested: list[str] | None) -> dict[str, str]:

@@ -123,6 +123,36 @@ def test_create_job_rejects_out_of_range_parameter(client: TestClient) -> None:
     assert "outside allowed range" in response.json()["detail"]
 
 
+def test_create_job_accepts_sweep_list_for_sweep_parameter(client: TestClient) -> None:
+    register_model(client)
+    response = client.post(
+        "/jobs",
+        json={
+            "model_id": "spr_pcf_v1",
+            "params": {"lambda0": ["1500[nm]", "1550[nm]", "1600[nm]"]},
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    from simserver import queue as q
+
+    override = app.dependency_overrides[get_db]
+    conn_gen = override()
+    conn = next(conn_gen)
+    job = q.claim_next_job(conn, "worker-1")
+    assert job.params == {"lambda0": ["1500[nm]", "1550[nm]", "1600[nm]"]}
+
+
+def test_create_job_rejects_sweep_list_for_non_sweep_parameter(client: TestClient) -> None:
+    register_model(client)
+    response = client.post(
+        "/jobs",
+        json={"model_id": "spr_pcf_v1", "params": {"pitch": ["1.5[um]", "2.0[um]"]}},
+    )
+    assert response.status_code == 400
+    assert "sweep_parameter" in response.json()["detail"]
+
+
 def test_create_job_rejects_unknown_output_name(client: TestClient) -> None:
     register_model(client)
     response = client.post(

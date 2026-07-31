@@ -41,7 +41,9 @@ def _get_model_or_404(conn: sqlite3.Connection, model_id: str) -> sqlite3.Row:
 
 class JobCreate(BaseModel):
     model_id: str
-    params: dict[str, str] = {}
+    # a list value is a sweep request (plan §7) — only valid for the
+    # manifest's sweep_parameter, enforced by validate_params
+    params: dict[str, str | list[str]] = {}
     outputs: list[str] | None = None
     priority: int = 0
 

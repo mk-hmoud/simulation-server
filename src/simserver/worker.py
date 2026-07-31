@@ -3,7 +3,16 @@
 Job submissions are validated against a model's manifest at the API layer
 (M4) before they ever become a job row; the worker trusts params/outputs as
 already-resolved and only reads the manifest here for the geometry-flag set
-used to decide whether a rebuild is needed.
+used to decide whether a rebuild is needed, and for sweep/mode-selection
+configuration.
+
+Sweeps (plan §7): a list value on the manifest's sweep_parameter means "run
+this as one in-COMSOL parametric sweep", not N jobs. The backend's evaluate()
+then returns every sweep point's data in one flat array (confirmed live via
+tools/mph_sweep_explore.py — see mph_backend.py), fetched once per output
+expression and sliced per point here, rather than calling evaluate() once per
+point (which would be both wasteful and, for a mode-dependent expression,
+wrong — it's a single Java-side call regardless of how many points there are).
 """
 
 from __future__ import annotations
@@ -17,21 +26,50 @@ import psutil
 
 from . import queue as q
 from .backend.base import BackendError, ErrorClass, ModelHandle, SolverBackend
-from .manifest import Manifest
-from .mode_selection import select_mode
+from .manifest import Manifest, parse_magnitude
+from .mode_selection import check_strategy_supported, nearest_index
 
 
-def _scalar_size(value) -> int:
-    size = getattr(value, "size", None)
-    if size is not None:
-        return int(size)
-    if isinstance(value, (list, tuple)):
-        return len(value)
-    return 1
+def _to_flat_list(raw) -> list:
+    if hasattr(raw, "tolist"):
+        raw = raw.tolist()
+    if not isinstance(raw, list):
+        raw = [raw]
+    return raw
 
 
-def _to_native(value):
-    return value.item() if hasattr(value, "item") else value
+def _slice_for_point(raw, sweep_index: int, n_points: int) -> list:
+    """Split a possibly-flattened (n_points * k) evaluate() result into the
+    slice belonging to one sweep point. Degenerates to "the whole thing" when
+    n_points == 1 (the non-swept case), so callers don't need to special-case
+    it — this also transparently handles either shape a non-mode-dependent
+    expression might come back as under a sweep (length n_points, or length
+    n_points * n_modes with the same value repeated per mode): unverified
+    against a real model either way, but this slicing is correct regardless
+    of which one it turns out to be.
+    """
+    flat = _to_flat_list(raw)
+    total = len(flat)
+    if total % n_points != 0:
+        raise BackendError(
+            f"sweep result has {total} values, not evenly divisible by {n_points} sweep points",
+            ErrorClass.INFRASTRUCTURE,
+        )
+    per_point = total // n_points
+    start = sweep_index * per_point
+    return flat[start : start + per_point]
+
+
+def _resolve_point_value(point_values: list, selected_index: int | None):
+    if len(point_values) == 1:
+        return point_values[0]
+    if selected_index is None:
+        raise BackendError(
+            f"expression returned {len(point_values)} values (per-mode array) but no mode_selection "
+            "is configured in the manifest to pick one",
+            ErrorClass.VALIDATION,
+        )
+    return point_values[selected_index]
 
 
 class Worker:
@@ -76,18 +114,6 @@ class Worker:
     def _needs_rebuild(self, params: dict[str, str]) -> bool:
         return any(params.get(name) != self._last_params.get(name) for name in self._geometry_params)
 
-    def _resolve_output_value(self, raw, selected_index: int | None):
-        size = _scalar_size(raw)
-        if size == 1:
-            return _to_native(raw)
-        if selected_index is None:
-            raise BackendError(
-                f"expression returned {size} values (per-mode array) but no mode_selection "
-                "is configured in the manifest to pick one",
-                ErrorClass.VALIDATION,
-            )
-        return _to_native(raw[selected_index])
-
     def process_one(self) -> bool:
         """Claim and run a single job. Returns False if the queue was empty."""
         job = q.claim_next_job(self.conn, self.worker_id, preferred_model_id=self._loaded_model_id)
@@ -96,8 +122,22 @@ class Worker:
 
         try:
             self._load_model_if_needed(job.model_id)
-            rebuild = self._needs_rebuild(job.params)
-            self.backend.set_parameters(self._handle, job.params)
+
+            sweep_param = self._manifest.sweep_parameter
+            raw_sweep_values = job.params.get(sweep_param) if sweep_param else None
+            is_sweep = isinstance(raw_sweep_values, list)
+
+            params_for_set = dict(job.params)
+            if is_sweep:
+                del params_for_set[sweep_param]
+                self.backend.configure_sweep(
+                    self._handle, sweep_param, raw_sweep_values, study=self._manifest.study
+                )
+            else:
+                self.backend.disable_sweep(self._handle)
+
+            rebuild = self._needs_rebuild(params_for_set)
+            self.backend.set_parameters(self._handle, params_for_set)
             if rebuild:
                 t0 = time.monotonic()
                 self.backend.build_geometry(self._handle)
@@ -105,27 +145,48 @@ class Worker:
                 print(f"worker {self.worker_id}: job {job.id}: rebuilt geometry+mesh ({time.monotonic() - t0:.1f}s)", flush=True)
             else:
                 print(f"worker {self.worker_id}: job {job.id}: skipped rebuild (no geometry parameter changed)", flush=True)
+
             t0 = time.monotonic()
-            self.backend.solve(self._handle, study=None)
+            self.backend.solve(self._handle, study=self._manifest.study)
             print(f"worker {self.worker_id}: job {job.id}: solved ({time.monotonic() - t0:.1f}s)", flush=True)
-            self._last_params = dict(job.params)
+            self._last_params = dict(params_for_set)
 
-            selected_index: int | None = None
-            if self._manifest.mode_selection is not None:
-                mode_result = select_mode(self.backend, self._handle, self._manifest)
-                selected_index = mode_result.selected_index
-                q.write_mode_selection(
-                    self.conn,
-                    job.id,
-                    mode_result.strategy,
-                    mode_result.n_modes_considered,
-                    core_fraction=mode_result.core_fraction,
-                )
+            n_points = len(raw_sweep_values) if is_sweep else 1
 
-            for name, expression in job.outputs.items():
-                raw = self.backend.evaluate(self._handle, expression)
-                value = self._resolve_output_value(raw, selected_index)
-                q.write_result(self.conn, job.id, name, value)
+            # fetch each output's raw evaluate() result once (not once per
+            # sweep point — see module docstring), then slice per point below
+            raw_outputs = {name: self.backend.evaluate(self._handle, expr) for name, expr in job.outputs.items()}
+
+            mode_selection = self._manifest.mode_selection
+            raw_neff = raw_target = None
+            if mode_selection is not None:
+                check_strategy_supported(mode_selection)
+                neff_expr = self._manifest.outputs[mode_selection.neff_output]
+                raw_neff = self.backend.evaluate(self._handle, neff_expr)
+                raw_target = self.backend.evaluate(self._handle, mode_selection.neff_target_expression)
+
+            for sweep_index in range(n_points):
+                sweep_value = parse_magnitude(raw_sweep_values[sweep_index]) if is_sweep else None
+
+                selected_index: int | None = None
+                if mode_selection is not None:
+                    neff_point = _slice_for_point(raw_neff, sweep_index, n_points)
+                    target_point = _slice_for_point(raw_target, sweep_index, n_points)
+                    selected_index = nearest_index(neff_point, target_point[0])
+                    q.write_mode_selection(
+                        self.conn,
+                        job.id,
+                        mode_selection.strategy,
+                        len(neff_point),
+                        sweep_index=sweep_index,
+                        core_fraction=None,
+                    )
+
+                for name, raw in raw_outputs.items():
+                    point_values = _slice_for_point(raw, sweep_index, n_points)
+                    value = _resolve_point_value(point_values, selected_index)
+                    q.write_result(self.conn, job.id, name, value, sweep_index=sweep_index, sweep_value=sweep_value)
+
             q.mark_done(self.conn, job.id)
         except BackendError as exc:
             q.mark_failed(self.conn, job.id, exc.error_class.value, str(exc))

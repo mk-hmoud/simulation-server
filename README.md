@@ -66,12 +66,23 @@ Built without a COMSOL license / VM access:
   `FakeBackend` unit tests or the raw `mph_explore.py` script): a
   non-geometry-only job skipped the rebuild entirely, a geometry-parameter
   job triggered a 0.6s rebuild, consistent with earlier raw findings.
-- In-COMSOL sweeps (M7, part 3 of 3) — not yet started; needs fresh `mph`/Java
-  API exploration (how to configure a parametric sweep study extension),
-  unlike the other M6/M7 pieces which mostly built on already-confirmed API.
+- In-COMSOL sweeps (M7, part 3 of 3) — done. `tools/mph_sweep_explore.py`
+  found the real mechanism live: a "Parametric Sweep" study extension
+  (`Study.create('Parametric')`, properties `pname`/`plistarr`), solved via
+  the normal `model.solve(study)`, with all points' data in a second
+  dataset COMSOL creates ("...//Parametric Solutions 1") rather than the
+  default one (which only ever holds the last point — a real trap for
+  anyone evaluating post-sweep without knowing this). `SolverBackend` grew
+  `configure_sweep`/`disable_sweep`; the worker fetches each output once
+  (not once per point) and slices the flattened result per sweep point,
+  running mode selection independently per point (`results`/`mode_selection`
+  rows keyed by `sweep_index`/`sweep_value`). A client requests a sweep by
+  passing a list of values for the manifest's `sweep_parameter` instead of a
+  single string. `core_power_fraction` remains the one explicit stub in the
+  whole M6/M7 arc — still deferred pending a fixture with a real domain
+  selection.
 
-Not yet built: in-COMSOL sweeps (M7 remainder), batches/dataset export (M8),
-service install/auth (M9).
+Not yet built: batches/dataset export (M8), service install/auth (M9).
 
 ## Dev setup
 
