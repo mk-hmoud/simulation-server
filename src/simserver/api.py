@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from typing import Iterator
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ValidationError
 
 from . import config, db
@@ -28,6 +28,31 @@ def get_db() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def require_job_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Plan §9: a static API key on top of the tunnel, for the case where the
+    tunnel is shared. Either configured key satisfies this tier — admin can
+    do everything a job key can. If NEITHER key is configured, auth is
+    disabled entirely (dev mode); production deployments must set both env
+    vars (SIMSERVER_JOB_API_KEY, SIMSERVER_ADMIN_API_KEY)."""
+    configured = {k for k in (config.JOB_API_KEY, config.ADMIN_API_KEY) if k}
+    if not configured:
+        return
+    if x_api_key in configured:
+        return
+    raise HTTPException(status_code=401, detail="missing or invalid API key")
+
+
+def require_admin_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Model upload and maintenance-mode toggling need the admin key
+    specifically, never the job key (plan §9). Disabled (dev mode) if
+    SIMSERVER_ADMIN_API_KEY isn't set."""
+    if config.ADMIN_API_KEY is None:
+        return
+    if x_api_key == config.ADMIN_API_KEY:
+        return
+    raise HTTPException(status_code=401, detail="missing or invalid admin API key")
 
 
 def _load_manifest(row: sqlite3.Row) -> Manifest:
@@ -64,7 +89,7 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/models")
+@app.post("/models", dependencies=[Depends(require_admin_key)])
 def create_model(
     manifest: str = Form(..., description="JSON manifest, see plan §4"),
     file: UploadFile = File(...),
@@ -81,7 +106,7 @@ def create_model(
     return {"model_id": parsed.model_id, "path": str(model_path)}
 
 
-@app.get("/models")
+@app.get("/models", dependencies=[Depends(require_job_key)])
 def list_models(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
     out = []
     for row in q.list_models(conn):
@@ -96,13 +121,13 @@ def list_models(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
     return out
 
 
-@app.get("/models/{model_id}")
+@app.get("/models/{model_id}", dependencies=[Depends(require_job_key)])
 def get_model(model_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     row = _get_model_or_404(conn, model_id)
     return json.loads(row["manifest_json"])
 
 
-@app.post("/jobs")
+@app.post("/jobs", dependencies=[Depends(require_job_key)])
 def create_job(job: JobCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict[str, int]:
     model_row = _get_model_or_404(conn, job.model_id)
     manifest = _load_manifest(model_row)
@@ -117,7 +142,7 @@ def create_job(job: JobCreate, conn: sqlite3.Connection = Depends(get_db)) -> di
     return {"job_id": job_id}
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", dependencies=[Depends(require_job_key)])
 def get_job(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     row = q.get_job(conn, job_id)
     if row is None:
@@ -125,14 +150,14 @@ def get_job(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return dict(row)
 
 
-@app.get("/jobs/{job_id}/results")
+@app.get("/jobs/{job_id}/results", dependencies=[Depends(require_job_key)])
 def get_job_results(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     if q.get_job(conn, job_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown job_id {job_id}")
     return {"job_id": job_id, "results": [dict(row) for row in q.list_results(conn, job_id)]}
 
 
-@app.delete("/jobs/{job_id}")
+@app.delete("/jobs/{job_id}", dependencies=[Depends(require_job_key)])
 def cancel_job(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     row = q.get_job(conn, job_id)
     if row is None:
@@ -147,12 +172,12 @@ def cancel_job(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return {"job_id": job_id, "status": "cancelled"}
 
 
-@app.get("/queue")
+@app.get("/queue", dependencies=[Depends(require_job_key)])
 def get_queue(conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return q.queue_summary(conn)
 
 
-@app.post("/batches")
+@app.post("/batches", dependencies=[Depends(require_job_key)])
 def create_batch(batch: BatchCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     model_row = _get_model_or_404(conn, batch.model_id)
     manifest = _load_manifest(model_row)
@@ -175,7 +200,7 @@ def create_batch(batch: BatchCreate, conn: sqlite3.Connection = Depends(get_db))
     return {"batch_id": batch_id, "job_ids": job_ids}
 
 
-@app.get("/batches/{batch_id}")
+@app.get("/batches/{batch_id}", dependencies=[Depends(require_job_key)])
 def get_batch(batch_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
     summary = q.batch_summary(conn, batch_id)
     if summary is None:
@@ -183,7 +208,7 @@ def get_batch(batch_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict
     return summary
 
 
-@app.get("/batches/{batch_id}/dataset.csv")
+@app.get("/batches/{batch_id}/dataset.csv", dependencies=[Depends(require_job_key)])
 def get_batch_dataset(batch_id: str, conn: sqlite3.Connection = Depends(get_db)) -> Response:
     if q.batch_summary(conn, batch_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown batch_id {batch_id!r}")
@@ -191,7 +216,7 @@ def get_batch_dataset(batch_id: str, conn: sqlite3.Connection = Depends(get_db))
     return Response(content=csv_text, media_type="text/csv")
 
 
-@app.post("/admin/drain")
+@app.post("/admin/drain", dependencies=[Depends(require_admin_key)])
 def admin_drain(conn: sqlite3.Connection = Depends(get_db)) -> dict:
     """Plan §7 maintenance mode: stops workers claiming new jobs and, once
     each finishes its current job (if any), exits — actually releasing the
@@ -201,7 +226,7 @@ def admin_drain(conn: sqlite3.Connection = Depends(get_db)) -> dict:
     return q.queue_summary(conn)
 
 
-@app.post("/admin/resume")
+@app.post("/admin/resume", dependencies=[Depends(require_admin_key)])
 def admin_resume(conn: sqlite3.Connection = Depends(get_db)) -> dict:
     q.set_maintenance_mode(conn, False)
     return q.queue_summary(conn)

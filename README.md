@@ -104,7 +104,78 @@ Built without a COMSOL license / VM access:
   and a real 2-worker supervisor cleanly draining (both workers exit, no
   respawn) and resuming (both respawned) on command.
 
-Not yet built: service install/auth (M9).
+- `src/simserver/config.py`, `api.py` — M9 auth: two-tier static API key
+  (plan §9), `SIMSERVER_JOB_API_KEY` / `SIMSERVER_ADMIN_API_KEY` env vars.
+  Job key covers everything except model upload and maintenance-mode
+  toggling, which need the admin key specifically (admin key also satisfies
+  the job tier). `GET /healthz` never requires a key. Either tier is disabled
+  (dev mode) if its env var is unset — verified locally both via `TestClient`
+  and a real `uvicorn` process + `curl` (401 without a key, 401 for the wrong
+  tier, 200 for the right one). NSSM service install and the tunnel are
+  deployment steps for you to run on the VM — see "Deployment" below.
+
+## Deployment (M9)
+
+Everything below runs **on the VM**, as Administrator where noted. Not yet
+executed — these are the steps to run when ready to actually deploy.
+
+### 1. Set the API keys
+
+Generate two random strings (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`
+twice) and set them as persistent environment variables (System Properties →
+Environment Variables, or `setx`) so services started by NSSM inherit them:
+
+```powershell
+setx SIMSERVER_JOB_API_KEY   "<job-key>" /M
+setx SIMSERVER_ADMIN_API_KEY "<admin-key>" /M
+```
+
+`/M` sets it machine-wide (needed since NSSM services don't inherit your
+interactive user's env otherwise). Requires a new shell / service restart to
+take effect.
+
+### 2. Install NSSM services (api + supervisor; workers are not services)
+
+Download NSSM from nssm.cc, extract `win64\nssm.exe` somewhere on `PATH`.
+
+```powershell
+nssm install SimServerApi "C:\simserver\.venv\Scripts\python.exe" "-m uvicorn simserver.api:app --host 127.0.0.1 --port 8000"
+nssm set SimServerApi AppDirectory C:\simserver
+nssm set SimServerApi AppStdout C:\simserver\data\logs\api.log
+nssm set SimServerApi AppStderr C:\simserver\data\logs\api.log
+nssm start SimServerApi
+
+nssm install SimServerSupervisor "C:\simserver\.venv\Scripts\python.exe" "-m simserver.cli supervisor --workers N --backend mph"
+nssm set SimServerSupervisor AppDirectory C:\simserver
+nssm set SimServerSupervisor AppStdout C:\simserver\data\logs\supervisor.log
+nssm set SimServerSupervisor AppStderr C:\simserver\data\logs\supervisor.log
+nssm start SimServerSupervisor
+```
+
+Replace `N` with a worker count sized from measured per-session RAM (plan
+§11 open question — still not measured; start with `--workers 1` and watch
+`Task Manager`/`Get-Process comsolmphserver` RSS before increasing).
+`AppEnvironmentExtra` isn't needed if step 1's `setx /M` was used; set it
+instead (`nssm set SimServerApi AppEnvironmentExtra KEY=value`) if you'd
+rather scope the keys to just these services.
+
+The supervisor's own `--memory-threshold-mb`/`--watchdog-timeout`/etc. flags
+(see `simserver supervisor --help`) are also worth setting explicitly here
+rather than relying on defaults tuned for dev.
+
+### 3. Reach the API — SSH tunnel or WireGuard/Tailscale
+
+Never expose the VM's port 8000 directly (the API binds `127.0.0.1` for
+exactly this reason). Pick one:
+
+- **SSH tunnel** (you already have SSH access to this VM from earlier
+  sessions): `ssh -L 8000:127.0.0.1:8000 <user>@<vm-host>`, then hit
+  `http://127.0.0.1:8000` locally. Simple, but the tunnel must stay open.
+- **WireGuard/Tailscale**: a persistent VPN-style link, no tunnel session to
+  keep alive. More setup, better for daily use.
+
+Either way, the API key (step 1) is the second layer "for the case where the
+tunnel is shared" (plan §9) — don't skip it even with a private tunnel.
 
 ## Dev setup
 
