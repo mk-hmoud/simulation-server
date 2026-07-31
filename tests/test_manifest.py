@@ -62,3 +62,26 @@ def test_validate_params_rejects_out_of_range_value_within_sweep_list() -> None:
 def test_validate_params_rejects_unit_mismatch_within_sweep_list() -> None:
     with pytest.raises(ManifestValidationError, match="unit"):
         validate_params(make_manifest(), {"l": ["0.8[um]", "800[nm]"]})
+
+
+def test_validate_params_rejects_bare_number_for_unit_bearing_parameter() -> None:
+    # a bare number silently gets COMSOL's own default unit (not the manifest's
+    # declared one), which is exactly what caused a real job to hang instead
+    # of failing cleanly — must be rejected at validation, not assumed
+    with pytest.raises(ManifestValidationError, match="must include a unit"):
+        validate_params(make_manifest(), {"l": "1.0"})
+
+
+def test_validate_params_rejects_bare_number_within_sweep_list() -> None:
+    with pytest.raises(ManifestValidationError, match="must include a unit"):
+        validate_params(make_manifest(), {"l": ["0.8[um]", "1.0"]})
+
+
+def test_validate_params_accepts_bare_number_for_dimensionless_parameter() -> None:
+    manifest = make_manifest(
+        parameters={
+            "l": {"unit": "um", "min": 0.5, "max": 2.0, "geometry": False},
+            "na": {"unit": "1", "min": 1.0, "max": 1.45, "geometry": False},
+        }
+    )
+    validate_params(manifest, {"na": "1.33"})  # must not raise — "1" unit means dimensionless

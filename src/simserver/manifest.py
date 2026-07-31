@@ -77,12 +77,28 @@ def parse_magnitude(raw: str) -> float:
     return float(match.group(1))
 
 
+_DIMENSIONLESS_UNITS = ("1", "", None)
+
+
 def _validate_one_value(manifest: Manifest, name: str, spec: ParameterSpec, raw: str) -> None:
     match = _VALUE_RE.match(raw)
     if not match:
         raise ManifestValidationError(f"parameter {name!r}: cannot parse value {raw!r}")
     magnitude = float(match.group(1))
     unit = match.group(2)
+    if unit is None and spec.unit not in _DIMENSIONLESS_UNITS:
+        # a bare number is not "assume the manifest's unit" — COMSOL uses its
+        # own default unit for that parameter (typically SI base units) when
+        # none is given, which is very likely NOT what spec.unit means. This
+        # fails silently (no validation error, no solver error) and just sends
+        # the wrong magnitude, e.g. a wavelength meant in micrometers arriving
+        # as whole meters — caught live when a job with bare-number params hung
+        # instead of erroring, so this must be rejected here, not assumed.
+        raise ManifestValidationError(
+            f"parameter {name!r}: value {raw!r} must include a unit, e.g. "
+            f"'{magnitude:g}[{spec.unit}]' — COMSOL uses its own default unit "
+            f"for a bare number, which is very unlikely to be {spec.unit!r}"
+        )
     if unit is not None and unit != spec.unit:
         raise ManifestValidationError(
             f"parameter {name!r}: unit {unit!r} does not match manifest unit {spec.unit!r}"
