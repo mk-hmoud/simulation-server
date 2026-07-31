@@ -88,7 +88,10 @@ def main() -> int:
     print("\n--- solving the study (with sweep active) ---")
     t0 = time.monotonic()
     try:
-        model.solve(args.study)
+        # pass the resolved Node, not args.study (a tag string) — model.solve()
+        # treats a plain str as a NAME lookup, not a tag lookup, and "std1" is
+        # the tag while the name is "Study 1"; this bit us the first attempt
+        model.solve(study)
     except Exception as exc:  # noqa: BLE001
         print(f"solve FAILED: {exc!r}")
         raise

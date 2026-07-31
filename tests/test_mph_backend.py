@@ -8,12 +8,26 @@ from simserver.backend.base import BackendError, ErrorClass
 from simserver.backend.mph_backend import MphBackend, MphModelHandle, _classify
 
 
+class FakeStudyNode:
+    def __init__(self, tag: str) -> None:
+        self._tag = tag
+
+    def tag(self) -> str:
+        return self._tag
+
+
 class FakeMphModel:
-    def __init__(self) -> None:
+    def __init__(self, study_tags: tuple[str, ...] = ("std1",)) -> None:
         self.params: dict[str, str] = {}
         self.solved_with: object = "not called"
         self.exported: tuple[str, str] | None = None
         self._solve_exc: Exception | None = None
+        self._studies = [FakeStudyNode(tag) for tag in study_tags]
+
+    def __truediv__(self, other: str):
+        if other == "studies":
+            return self._studies
+        raise KeyError(other)
 
     def parameter(self, name: str, value: str) -> None:
         self.params[name] = value
@@ -24,7 +38,7 @@ class FakeMphModel:
     def mesh(self) -> None:
         pass
 
-    def solve(self, study: str | None) -> None:
+    def solve(self, study) -> None:
         if self._solve_exc:
             raise self._solve_exc
         self.solved_with = study
@@ -81,11 +95,16 @@ def test_set_parameters_calls_model_parameter_per_entry(tmp_path: Path) -> None:
     assert model.params == {"lambda0": "1550[nm]", "na": "1.33"}
 
 
-def test_solve_passes_study_through(tmp_path: Path) -> None:
+def test_solve_resolves_study_tag_to_node_not_raw_string(tmp_path: Path) -> None:
+    # model.solve(str) does a NAME lookup, not a tag lookup (confirmed live via
+    # tools/mph_sweep_explore.py: "std1" is a tag, the name is "Study 1", and
+    # passing the tag string directly raised LookupError) — so the backend
+    # must resolve the tag to the actual study Node before calling solve()
     backend, model = make_backend()
     handle = backend.load(tmp_path / "m.mph")
     backend.solve(handle, "std1")
-    assert model.solved_with == "std1"
+    assert isinstance(model.solved_with, FakeStudyNode)
+    assert model.solved_with.tag() == "std1"
 
 
 def test_solve_with_no_study_passes_none(tmp_path: Path) -> None:
@@ -93,6 +112,18 @@ def test_solve_with_no_study_passes_none(tmp_path: Path) -> None:
     handle = backend.load(tmp_path / "m.mph")
     backend.solve(handle, None)
     assert model.solved_with is None
+
+
+def test_solve_with_unknown_study_tag_is_validation_error_not_reclassified(tmp_path: Path) -> None:
+    backend, _ = make_backend()
+    handle = backend.load(tmp_path / "m.mph")
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.solve(handle, "no-such-tag")
+    # must stay VALIDATION, not get swept into the generic SOLVER default by
+    # _run's broad except — this was a real bug caught while adding this test
+    assert exc_info.value.error_class == ErrorClass.VALIDATION
+    assert "no-such-tag" in str(exc_info.value)
 
 
 def test_solve_failure_without_license_keyword_is_solver_class(tmp_path: Path) -> None:

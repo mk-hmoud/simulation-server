@@ -9,9 +9,14 @@ partly by reading the installed mph package's own source directly:
                                               # (hard constraint: one JVM/process)
     model = client.load(path)
     model.parameter(name, value)             # value as string incl. unit, e.g. '1.8[um]'
-    model.build(); model.mesh(); model.solve(study)  # study: str | None, confirmed
-                                                      # from mph.model.Model.solve's
-                                                      # own signature/source
+    model.build(); model.mesh(); model.solve(study)  # study: str | Node — a plain str
+                                                      # is a NAME lookup (GUI label, e.g.
+                                                      # "Study 1"), NOT a tag lookup ("std1")
+                                                      # — confirmed live via a LookupError
+                                                      # when passing the tag directly
+                                                      # (tools/mph_sweep_explore.py). This
+                                                      # backend always resolves a tag to the
+                                                      # actual Node first (_resolve_study).
     model.evaluate(expression) -> numpy.ndarray      # one value per eigenmode
                                                       # if solution is Eigenfrequency
     model.export(node, path)                         # node: str name under 'exports'
@@ -93,6 +98,8 @@ class MphBackend:
     def _run(self, fn: Callable[[], T], phase: str, *, default: ErrorClass) -> T:
         try:
             return fn()
+        except BackendError:
+            raise  # already correctly classified (e.g. _resolve_study) — don't reclassify
         except Exception as exc:  # noqa: BLE001 - reclassified below, not swallowed
             raise BackendError(f"{phase} failed: {exc}", _classify(exc, default=default)) from exc
 
@@ -115,7 +122,23 @@ class MphBackend:
         self._run(handle.model.mesh, "mesh", default=ErrorClass.SOLVER)
 
     def solve(self, handle: MphModelHandle, study: str | None) -> None:
-        self._run(lambda: handle.model.solve(study), "solve", default=ErrorClass.SOLVER)
+        # study here is a TAG (e.g. manifest's "study": "std1"), but
+        # Model.solve(str) treats a plain string as a NAME lookup, not a tag
+        # lookup — passing the tag directly raises LookupError (confirmed live
+        # via tools/mph_sweep_explore.py: "std1" is the tag, "Study 1" is the
+        # name). Resolve to the actual Node by tag first.
+        def _solve() -> None:
+            target = self._resolve_study(handle.model, study) if study else None
+            handle.model.solve(target)
+
+        self._run(_solve, "solve", default=ErrorClass.SOLVER)
+
+    @staticmethod
+    def _resolve_study(model: Any, tag: str):
+        for candidate in model / "studies":
+            if candidate.tag() == tag:
+                return candidate
+        raise BackendError(f"no study with tag {tag!r}", ErrorClass.VALIDATION)
 
     def evaluate(self, handle: MphModelHandle, expression: str) -> Any:
         return self._run(lambda: handle.model.evaluate(expression), "evaluate", default=ErrorClass.VALIDATION)
