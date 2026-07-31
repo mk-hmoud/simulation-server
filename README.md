@@ -114,6 +114,27 @@ Built without a COMSOL license / VM access:
   tier, 200 for the right one). NSSM service install and the tunnel are
   deployment steps for you to run on the VM — see "Deployment" below.
 
+- `src/simserver/web.py`, `auth.py`, `deps.py`, `templates/`, `static/` —
+  server-rendered web client (Jinja2 + minimal vanilla JS, no SPA/build
+  step) so other researchers in the faculty can submit and monitor
+  simulations from a browser, not just via the JSON API/CLI. A separate
+  auth layer from the JSON API's static key scheme: per-user accounts
+  (username/password, PBKDF2 via stdlib `hashlib`, no new dependency),
+  session cookies, admin-created accounts only (`simserver users create`,
+  or the Users page for an already-logged-in admin — no public
+  self-registration). Jobs/batches submitted through the UI go through the
+  *exact same* `manifest.validate_params`/`resolve_outputs`/
+  `queue.enqueue_job` the JSON API uses, stamped with the submitting user's
+  `owner_user_id`, so "my jobs" vs. the shared queue is just a filter, not a
+  separate code path. A swept job's detail page draws a small canvas line
+  chart per output (value vs. sweep value) with vanilla JS — no charting
+  library/CDN, since researchers reach this over a private Tailscale link
+  with no reason to depend on external fetches. Verified live via a real
+  `uvicorn` process: login → dashboard → model detail → job submission →
+  worker processes it → job detail page shows the result, with the correct
+  `owner_user_id`; non-admin correctly blocked (403) from `/ui/admin`,
+  `/ui/users`, `/ui/models/new`.
+
 ## Deployment (M9)
 
 Everything below runs **on the VM**, as Administrator where noted. Not yet
@@ -163,19 +184,33 @@ The supervisor's own `--memory-threshold-mb`/`--watchdog-timeout`/etc. flags
 (see `simserver supervisor --help`) are also worth setting explicitly here
 rather than relying on defaults tuned for dev.
 
-### 3. Reach the API — SSH tunnel or WireGuard/Tailscale
+### 3. Reach the API — Tailscale
 
 Never expose the VM's port 8000 directly (the API binds `127.0.0.1` for
-exactly this reason). Pick one:
+exactly this reason). Chosen approach: **Tailscale**, so other researchers
+in the faculty can reach it too, not just a single tunnel operator — each
+researcher installs the Tailscale client on their own machine and is added
+as a peer; once that's done they can reach `http://<vm-tailscale-ip>:8000`
+(and `/ui/...` for the web client) from anywhere with internet access, no
+physical/campus-network requirement. Adding peers is a one-time step per
+researcher, done outside this codebase (Tailscale admin console).
 
-- **SSH tunnel** (you already have SSH access to this VM from earlier
-  sessions): `ssh -L 8000:127.0.0.1:8000 <user>@<vm-host>`, then hit
-  `http://127.0.0.1:8000` locally. Simple, but the tunnel must stay open.
-- **WireGuard/Tailscale**: a persistent VPN-style link, no tunnel session to
-  keep alive. More setup, better for daily use.
+The API key (step 1) is a second layer on top of the tunnel "for the case
+where the tunnel is shared" (plan §9) — keep it even with Tailscale. The web
+client's per-user accounts (below) are a separate, additional layer on top
+of that, specific to the browser UI.
 
-Either way, the API key (step 1) is the second layer "for the case where the
-tunnel is shared" (plan §9) — don't skip it even with a private tunnel.
+### 4. Create researcher accounts for the web client
+
+```powershell
+python -m simserver.cli users create <username> --admin   # for yourself / other admins
+python -m simserver.cli users create <username>            # for each researcher
+```
+
+Prompts for a password (hidden input) if `--password` isn't given. Point
+researchers at `http://<vm-tailscale-ip>:8000/ui/login`. Admins can also
+create accounts from the Users page once logged in, so this doesn't have to
+stay a CLI-only step.
 
 ## Dev setup
 
@@ -185,10 +220,17 @@ pip install -e '.[dev,api]'
 pytest
 ```
 
-Run the API (binds `127.0.0.1` by default via uvicorn's own default host):
+Run the API + web client (binds `127.0.0.1` by default via uvicorn's own
+default host):
 
 ```
 uvicorn simserver.api:app --reload
+```
+
+Create a local user and open the web client at `http://127.0.0.1:8000/ui/login`:
+
+```
+simserver users create myself --admin --password devpassword
 ```
 
 Run a worker against it (separate process, same `data/jobs.db`):
@@ -197,4 +239,4 @@ Run a worker against it (separate process, same `data/jobs.db`):
 simserver worker
 ```
 
-Extras: `.[mph]` (only installable in the VM), `.[api]` (FastAPI/uvicorn/python-multipart, for M4).
+Extras: `.[mph]` (only installable in the VM), `.[api]` (FastAPI/uvicorn/python-multipart/jinja2, for M4 + the web client).

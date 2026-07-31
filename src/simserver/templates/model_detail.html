@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ model_id }} — simulation-server{% endblock %}
+{% block content %}
+<h1>{{ model_id }}</h1>
+{% if manifest.description %}<p class="muted">{{ manifest.description }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<div class="card">
+  <h2>Submit a job</h2>
+  <form method="post" action="/ui/models/{{ model_id }}/jobs">
+    {% for name, spec in manifest.parameters.items() %}
+    <label>{{ name }} <span class="hint">({{ spec.unit }}, range [{{ spec.min }}, {{ spec.max }}]{% if name == manifest.sweep_parameter %} — comma-separate values to sweep{% endif %})</span>
+      <input type="text" name="{{ name }}" placeholder="e.g. 1.0[{{ spec.unit }}]">
+    </label>
+    {% endfor %}
+
+    <label>Outputs</label>
+    {% for name, expr in manifest.outputs.items() %}
+    <div class="checkbox-row">
+      <input type="checkbox" name="outputs" value="{{ name }}" id="out-{{ name }}" checked>
+      <label for="out-{{ name }}" style="margin:0">{{ name }} <span class="hint">({{ expr }})</span></label>
+    </div>
+    {% endfor %}
+
+    <label>Priority <span class="hint">(higher runs first)</span>
+      <input type="number" name="priority" value="0">
+    </label>
+
+    <button type="submit">Submit job</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Submit a batch</h2>
+  <p class="muted">One job per entry — for varying anything other than the sweep parameter (e.g. geometry). Paste a JSON array of parameter dicts.</p>
+  <form method="post" action="/ui/models/{{ model_id }}/batches">
+    <textarea name="params_list" placeholder='[{"param_name": "1.5[um]"}, {"param_name": "2.0[um]"}]'></textarea>
+    <button type="submit">Submit batch</button>
+  </form>
+</div>
+{% endblock %}

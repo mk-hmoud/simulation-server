@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Batch {{ batch_id }} — simulation-server{% endblock %}
+{% block content %}
+<h1>Batch {{ batch_id }}</h1>
+<div class="card">
+  <p>
+    {% for status, count in summary.depth.items() %}
+      <strong>{{ count }}</strong> {{ status }}&nbsp;&nbsp;
+    {% endfor %}
+    &nbsp; ({{ summary.total }} total)
+  </p>
+  <a class="button" href="/ui/batches/{{ batch_id }}/dataset.csv">Download dataset.csv</a>
+</div>
+
+<table>
+  <tr><th>ID</th><th>Model</th><th>Status</th><th>Created</th></tr>
+  {% for job in jobs %}
+  <tr>
+    <td><a class="plain" href="/ui/jobs/{{ job.id }}">{{ job.id }}</a></td>
+    <td>{{ job.model_id }}</td>
+    <td><span class="status status-{{ job.status }}">{{ job.status }}</span></td>
+    <td>{{ job.created_at }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

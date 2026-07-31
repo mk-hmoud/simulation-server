@@ -48,13 +48,42 @@ def enqueue_job(
     batch_id: str | None = None,
     outputs: dict[str, str] | None = None,
     priority: int = 0,
+    owner_user_id: int | None = None,
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO jobs (batch_id, model_id, params_json, outputs_json, status, priority, created_at) "
-        "VALUES (?, ?, ?, ?, 'queued', ?, ?)",
-        (batch_id, model_id, json.dumps(params), json.dumps(outputs or {}), priority, _now()),
+        "INSERT INTO jobs (batch_id, model_id, params_json, outputs_json, status, priority, created_at, owner_user_id) "
+        "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)",
+        (batch_id, model_id, json.dumps(params), json.dumps(outputs or {}), priority, _now(), owner_user_id),
     )
     return cur.lastrowid
+
+
+def list_jobs(conn: sqlite3.Connection, *, owner_user_id: int | None = None) -> list[sqlite3.Row]:
+    if owner_user_id is None:
+        return conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()
+    return conn.execute(
+        "SELECT * FROM jobs WHERE owner_user_id = ? ORDER BY id DESC", (owner_user_id,)
+    ).fetchall()
+
+
+def create_user(conn: sqlite3.Connection, username: str, password_hash: str, *, is_admin: bool = False) -> int:
+    cur = conn.execute(
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
+        (username, password_hash, int(is_admin), _now()),
+    )
+    return cur.lastrowid
+
+
+def get_user_by_username(conn: sqlite3.Connection, username: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+
+def get_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def list_users(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY username").fetchall()
 
 
 @dataclass

@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS admin_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- web client (researcher accounts, session cookies) — a separate auth layer
+-- from the JSON API's static X-API-Key scheme, not merged with it
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 """
 
 
@@ -84,5 +101,15 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # jobs already existed (with real data, including on the deployed VM)
+    # before the web client added ownership — CREATE TABLE IF NOT EXISTS
+    # can't retrofit a column onto an existing table, so migrate explicitly
+    _add_column_if_missing(conn, "jobs", "owner_user_id", "owner_user_id INTEGER REFERENCES users(id)")

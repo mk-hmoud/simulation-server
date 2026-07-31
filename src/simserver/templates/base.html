@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}simulation-server{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if user %}
+<nav>
+  <span class="brand">simulation-server</span>
+  <a href="/ui/">Dashboard</a>
+  <a href="/ui/models">Models</a>
+  <a href="/ui/jobs">Jobs</a>
+  {% if user.is_admin %}
+  <a href="/ui/admin">Admin</a>
+  <a href="/ui/users">Users</a>
+  {% endif %}
+  <span class="spacer"></span>
+  <span class="user">{{ user.username }}</span>
+  <form action="/ui/logout" method="post" style="display:inline">
+    <button type="submit" class="secondary" style="margin-top:0">Log out</button>
+  </form>
+</nav>
+{% endif %}
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

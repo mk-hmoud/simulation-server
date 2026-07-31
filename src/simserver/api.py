@@ -7,27 +7,23 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from typing import Iterator
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
-from . import config, db
+from . import config
 from . import dataset
 from . import queue as q
 from . import storage
+from . import web
+from .deps import get_db, get_model_or_404, load_manifest
 from .manifest import Manifest, ManifestValidationError, resolve_outputs, validate_params
 
 app = FastAPI(title="simulation-server")
-
-
-def get_db() -> Iterator[sqlite3.Connection]:
-    conn = db.connect(config.DB_PATH)
-    db.init_db(conn)
-    try:
-        yield conn
-    finally:
-        conn.close()
+app.include_router(web.router)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
 
 
 def require_job_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -53,17 +49,6 @@ def require_admin_key(x_api_key: str | None = Header(default=None)) -> None:
     if x_api_key == config.ADMIN_API_KEY:
         return
     raise HTTPException(status_code=401, detail="missing or invalid admin API key")
-
-
-def _load_manifest(row: sqlite3.Row) -> Manifest:
-    return Manifest.model_validate(json.loads(row["manifest_json"]))
-
-
-def _get_model_or_404(conn: sqlite3.Connection, model_id: str) -> sqlite3.Row:
-    row = q.get_model(conn, model_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"unknown model_id {model_id!r}")
-    return row
 
 
 class JobCreate(BaseModel):
@@ -123,14 +108,14 @@ def list_models(conn: sqlite3.Connection = Depends(get_db)) -> list[dict]:
 
 @app.get("/models/{model_id}", dependencies=[Depends(require_job_key)])
 def get_model(model_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    row = _get_model_or_404(conn, model_id)
+    row = get_model_or_404(conn, model_id)
     return json.loads(row["manifest_json"])
 
 
 @app.post("/jobs", dependencies=[Depends(require_job_key)])
 def create_job(job: JobCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict[str, int]:
-    model_row = _get_model_or_404(conn, job.model_id)
-    manifest = _load_manifest(model_row)
+    model_row = get_model_or_404(conn, job.model_id)
+    manifest = load_manifest(model_row)
 
     try:
         validate_params(manifest, job.params)
@@ -179,8 +164,8 @@ def get_queue(conn: sqlite3.Connection = Depends(get_db)) -> dict:
 
 @app.post("/batches", dependencies=[Depends(require_job_key)])
 def create_batch(batch: BatchCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict:
-    model_row = _get_model_or_404(conn, batch.model_id)
-    manifest = _load_manifest(model_row)
+    model_row = get_model_or_404(conn, batch.model_id)
+    manifest = load_manifest(model_row)
 
     if not batch.params_list:
         raise HTTPException(status_code=400, detail="params_list must not be empty")

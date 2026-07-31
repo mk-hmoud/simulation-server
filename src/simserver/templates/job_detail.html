@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id }} — simulation-server{% endblock %}
+{% block content %}
+<h1>Job {{ job.id }}</h1>
+<div class="card">
+  <table>
+    <tr><th>Model</th><td>{{ job.model_id }}</td></tr>
+    <tr><th>Status</th><td><span class="status status-{{ job.status }}">{{ job.status }}</span></td></tr>
+    {% if job.batch_id %}<tr><th>Batch</th><td><a class="plain" href="/ui/batches/{{ job.batch_id }}">{{ job.batch_id }}</a></td></tr>{% endif %}
+    <tr><th>Params</th><td><code>{{ job.params_json }}</code></td></tr>
+    <tr><th>Created</th><td>{{ job.created_at }}</td></tr>
+    {% if job.started_at %}<tr><th>Started</th><td>{{ job.started_at }}</td></tr>{% endif %}
+    {% if job.finished_at %}<tr><th>Finished</th><td>{{ job.finished_at }}</td></tr>{% endif %}
+    {% if job.error_class %}
+    <tr><th>Error</th><td class="error">[{{ job.error_class }}] {{ job.error_message }} (attempt {{ job.attempt }})</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+{% if results %}
+<h2>Results</h2>
+<table>
+  <tr><th>Output</th><th>Sweep index</th><th>Sweep value</th><th>Real</th><th>Imag</th></tr>
+  {% for r in results %}
+  <tr>
+    <td>{{ r.output_name }}</td>
+    <td>{{ r.sweep_index }}</td>
+    <td>{{ r.sweep_value if r.sweep_value is not none else "—" }}</td>
+    <td>{{ r.value_real }}</td>
+    <td>{{ r.value_imag if r.value_imag is not none else "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% if mode_selection %}
+<h2>Mode selection</h2>
+<table>
+  <tr><th>Sweep index</th><th>Strategy</th><th>Modes considered</th><th>Core fraction</th></tr>
+  {% for m in mode_selection %}
+  <tr><td>{{ m.sweep_index }}</td><td>{{ m.strategy }}</td><td>{{ m.n_modes_considered }}</td><td>{{ m.core_fraction if m.core_fraction is not none else "—" }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if is_sweep %}
+<h2>Chart</h2>
+<div id="charts"></div>
+<script>
+  const chartData = {{ chart_data_json | safe }};
+
+  function drawChart(canvas, points) {
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height, pad = 36;
+    ctx.clearRect(0, 0, W, H);
+    if (!points.length) return;
+    const xs = points.map(p => p.sweep_value);
+    const ys = points.map(p => p.value_real);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const xr = (xmax - xmin) || 1, yr = (ymax - ymin) || 1;
+    const px = x => pad + (x - xmin) / xr * (W - 2 * pad);
+    const py = y => H - pad - (y - ymin) / yr * (H - 2 * pad);
+
+    ctx.strokeStyle = '#888';
+    ctx.beginPath();
+    ctx.moveTo(pad, pad); ctx.lineTo(pad, H - pad); ctx.lineTo(W - pad, H - pad);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const x = px(p.sweep_value), y = py(p.value_real);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.fillStyle = '#2563eb';
+    points.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(px(p.sweep_value), py(p.value_real), 3, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+
+    ctx.fillStyle = '#888';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(xmin.toFixed(4), pad, H - pad + 16);
+    ctx.fillText(xmax.toFixed(4), W - pad - 30, H - pad + 16);
+    ctx.fillText(ymax.toPrecision(4), 2, pad + 4);
+    ctx.fillText(ymin.toPrecision(4), 2, H - pad);
+  }
+
+  const container = document.getElementById('charts');
+  for (const [name, points] of Object.entries(chartData)) {
+    const wrap = document.createElement('div');
+    wrap.className = 'card';
+    const label = document.createElement('div');
+    label.className = 'muted';
+    label.textContent = name + ' vs sweep value';
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 240;
+    wrap.appendChild(label);
+    wrap.appendChild(canvas);
+    container.appendChild(wrap);
+    drawChart(canvas, points.slice().sort((a, b) => a.sweep_index - b.sweep_index));
+  }
+</script>
+{% endif %}
+{% else %}
+<p class="muted">No results yet.</p>
+{% endif %}
+{% endblock %}

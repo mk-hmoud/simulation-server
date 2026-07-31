@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Admin — simulation-server{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+
+<div class="card">
+  <h2>Maintenance mode</h2>
+  {% if summary.maintenance_mode %}
+    <p class="error">Maintenance mode is ON. Workers stop claiming new jobs and exit once their current job finishes (this actually releases the COMSOL license, not just idles).</p>
+    <form method="post" action="/ui/admin/resume"><button type="submit">Resume</button></form>
+  {% else %}
+    <p>Maintenance mode is off — workers are claiming jobs normally.</p>
+    <form method="post" action="/ui/admin/drain"><button type="submit" class="secondary">Drain</button></form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Queue</h2>
+  <p>
+    {% for status, count in summary.depth.items() %}
+      <strong>{{ count }}</strong> {{ status }}&nbsp;&nbsp;
+    {% else %}
+      <span class="muted">no jobs yet</span>
+    {% endfor %}
+  </p>
+  {% if summary.running %}
+  <table>
+    <tr><th>Job</th><th>Model</th><th>Worker</th><th>Started</th></tr>
+    {% for r in summary.running %}
+    <tr><td><a class="plain" href="/ui/jobs/{{ r.job_id }}">{{ r.job_id }}</a></td><td>{{ r.model_id }}</td><td>{{ r.worker_id }}</td><td>{{ r.started_at }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

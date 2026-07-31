@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Users — simulation-server{% endblock %}
+{% block content %}
+<h1>Users</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<table>
+  <tr><th>Username</th><th>Admin</th><th>Created</th></tr>
+  {% for u in users %}
+  <tr><td>{{ u.username }}</td><td>{{ "yes" if u.is_admin else "" }}</td><td>{{ u.created_at }}</td></tr>
+  {% endfor %}
+</table>
+
+<div class="card" style="max-width:320px">
+  <h2>Create researcher account</h2>
+  <form method="post" action="/ui/users">
+    <label>Username
+      <input type="text" name="username" required>
+    </label>
+    <label>Password
+      <input type="password" name="password" required>
+    </label>
+    <div class="checkbox-row">
+      <input type="checkbox" name="is_admin" id="is_admin">
+      <label for="is_admin" style="margin:0">Admin</label>
+    </div>
+    <button type="submit">Create</button>
+  </form>
+</div>
+{% endblock %}

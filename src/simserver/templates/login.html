@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Log in — simulation-server{% endblock %}
+{% block content %}
+<h1>Log in</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/ui/login" class="card" style="max-width:320px">
+  <label>Username
+    <input type="text" name="username" required autofocus>
+  </label>
+  <label>Password
+    <input type="password" name="password" required>
+  </label>
+  <button type="submit">Log in</button>
+</form>
+<p class="muted">No self-registration — ask an admin to create your account (<code>simserver users create</code> or the Users page).</p>
+{% endblock %}

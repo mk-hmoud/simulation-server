@@ -111,3 +111,32 @@ def test_dataset_writes_csv_to_file(db_path: Path, tmp_path: Path) -> None:
     content = out_path.read_text()
     assert "pitch" in content
     assert "1.44" in content
+
+
+def test_users_create_with_explicit_password(db_path: Path) -> None:
+    run(db_path, "users", "create", "alice", "--password", "s3cret", "--admin")
+
+    conn = db.connect(db_path)
+    user = q.get_user_by_username(conn, "alice")
+    assert user is not None
+    assert user["is_admin"] == 1
+    from simserver import auth
+
+    assert auth.verify_password("s3cret", user["password_hash"])
+
+
+def test_users_create_rejects_duplicate_username(db_path: Path) -> None:
+    run(db_path, "users", "create", "alice", "--password", "s3cret")
+    with pytest.raises(SystemExit, match="already exists"):
+        run(db_path, "users", "create", "alice", "--password", "other")
+
+
+def test_users_list(db_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    run(db_path, "users", "create", "alice", "--password", "s3cret")
+    run(db_path, "users", "create", "bob", "--password", "s3cret2")
+
+    capsys.readouterr()
+    run(db_path, "users", "list")
+    out = capsys.readouterr().out
+    assert "alice" in out
+    assert "bob" in out

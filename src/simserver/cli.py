@@ -7,7 +7,7 @@ import json
 import uuid
 from pathlib import Path
 
-from . import config, db
+from . import auth, config, db
 from . import queue as q
 from .backend import FakeBackend
 from .worker import Worker
@@ -185,6 +185,25 @@ def cmd_queue(args: argparse.Namespace) -> None:
     print(q.queue_summary(conn))
 
 
+def cmd_users_create(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    if q.get_user_by_username(conn, args.username) is not None:
+        raise SystemExit(f"user {args.username!r} already exists")
+    import getpass
+
+    password = args.password or getpass.getpass(f"Password for {args.username}: ")
+    if not password:
+        raise SystemExit("password must not be empty")
+    user_id = q.create_user(conn, args.username, auth.hash_password(password), is_admin=args.admin)
+    print(f"created user {args.username!r} (id={user_id}, admin={args.admin})")
+
+
+def cmd_users_list(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    for row in q.list_users(conn):
+        print(dict(row))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="simserver")
     parser.add_argument("--db", type=Path, default=config.DB_PATH, help="path to jobs.db")
@@ -276,6 +295,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_admin_drain)
     p = admin_sub.add_parser("resume")
     p.set_defaults(func=cmd_admin_resume)
+
+    users = sub.add_parser("users")
+    users_sub = users.add_subparsers(dest="users_command", required=True)
+    p = users_sub.add_parser("create")
+    p.add_argument("username")
+    p.add_argument("--admin", action="store_true", help="grant admin (model registration, drain/resume, user management)")
+    p.add_argument("--password", default=None, help="omit to be prompted (hidden input) instead")
+    p.set_defaults(func=cmd_users_create)
+    p = users_sub.add_parser("list")
+    p.set_defaults(func=cmd_users_list)
 
     return parser
 

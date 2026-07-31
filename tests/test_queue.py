@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 from simserver import db, queue as q
 
@@ -230,3 +233,72 @@ def test_list_batch_jobs_excludes_other_batches(tmp_path: Path) -> None:
 
     jobs = q.list_batch_jobs(conn, "batch-1")
     assert [j["id"] for j in jobs] == [j1, j2]
+
+
+def test_create_and_look_up_user(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    user_id = q.create_user(conn, "alice", "hashed-value", is_admin=True)
+
+    by_id = q.get_user(conn, user_id)
+    by_name = q.get_user_by_username(conn, "alice")
+
+    assert by_id["username"] == "alice"
+    assert by_id["is_admin"] == 1
+    assert by_name["id"] == user_id
+
+
+def test_get_user_by_username_unknown_returns_none(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    assert q.get_user_by_username(conn, "nobody") is None
+
+
+def test_list_users_ordered_by_username(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.create_user(conn, "bob", "h1")
+    q.create_user(conn, "alice", "h2")
+
+    users = q.list_users(conn)
+    assert [u["username"] for u in users] == ["alice", "bob"]
+
+
+def test_create_user_rejects_duplicate_username(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.create_user(conn, "alice", "h1")
+    with pytest.raises(sqlite3.IntegrityError):
+        q.create_user(conn, "alice", "h2")
+
+
+def test_enqueue_job_records_owner_user_id(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    user_id = q.create_user(conn, "alice", "h1")
+
+    job_id = q.enqueue_job(conn, "m1", {}, owner_user_id=user_id)
+
+    row = conn.execute("SELECT owner_user_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["owner_user_id"] == user_id
+
+
+def test_enqueue_job_owner_defaults_to_none(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+
+    job_id = q.enqueue_job(conn, "m1", {})
+
+    row = conn.execute("SELECT owner_user_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["owner_user_id"] is None
+
+
+def test_list_jobs_all_vs_owner_filtered(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    alice = q.create_user(conn, "alice", "h1")
+    bob = q.create_user(conn, "bob", "h2")
+    j_alice = q.enqueue_job(conn, "m1", {}, owner_user_id=alice)
+    j_bob = q.enqueue_job(conn, "m1", {}, owner_user_id=bob)
+
+    all_jobs = q.list_jobs(conn)
+    assert {j["id"] for j in all_jobs} == {j_alice, j_bob}
+
+    alice_jobs = q.list_jobs(conn, owner_user_id=alice)
+    assert [j["id"] for j in alice_jobs] == [j_alice]

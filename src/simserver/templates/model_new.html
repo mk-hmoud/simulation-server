@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Register model — simulation-server{% endblock %}
+{% block content %}
+<h1>Register a new model</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/ui/models/new" enctype="multipart/form-data" class="card">
+  <label>Manifest JSON <span class="hint">(see plan §4 / fixtures/README.md for the schema)</span>
+    <textarea name="manifest" required placeholder='{"model_id": "my_model", "parameters": {...}, "outputs": {...}}'></textarea>
+  </label>
+  <label>Model file (.mph)
+    <input type="file" name="file" required>
+  </label>
+  <button type="submit">Register</button>
+</form>
+{% endblock %}

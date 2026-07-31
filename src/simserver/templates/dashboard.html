@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — simulation-server{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="card">
+  <h2>Queue</h2>
+  <p>
+    {% for status, count in summary.depth.items() %}
+      <strong>{{ count }}</strong> {{ status }}&nbsp;&nbsp;
+    {% else %}
+      <span class="muted">no jobs yet</span>
+    {% endfor %}
+  </p>
+  {% if summary.maintenance_mode %}
+    <p class="error">Maintenance mode is ON — new jobs will queue but won't be picked up until an admin resumes.</p>
+  {% endif %}
+  <a class="button secondary" href="/ui/jobs">View all jobs</a>
+  <a class="button secondary" href="/ui/models">Browse models</a>
+</div>
+
+<h2>Recent jobs</h2>
+<table>
+  <tr><th>ID</th><th>Model</th><th>Status</th><th>Created</th></tr>
+  {% for job in recent_jobs %}
+  <tr>
+    <td><a class="plain" href="/ui/jobs/{{ job.id }}">{{ job.id }}</a></td>
+    <td>{{ job.model_id }}</td>
+    <td><span class="status status-{{ job.status }}">{{ job.status }}</span></td>
+    <td>{{ job.created_at }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No jobs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
