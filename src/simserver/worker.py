@@ -99,9 +99,15 @@ class Worker:
             rebuild = self._needs_rebuild(job.params)
             self.backend.set_parameters(self._handle, job.params)
             if rebuild:
+                t0 = time.monotonic()
                 self.backend.build_geometry(self._handle)
                 self.backend.mesh(self._handle)
+                print(f"worker {self.worker_id}: job {job.id}: rebuilt geometry+mesh ({time.monotonic() - t0:.1f}s)", flush=True)
+            else:
+                print(f"worker {self.worker_id}: job {job.id}: skipped rebuild (no geometry parameter changed)", flush=True)
+            t0 = time.monotonic()
             self.backend.solve(self._handle, study=None)
+            print(f"worker {self.worker_id}: job {job.id}: solved ({time.monotonic() - t0:.1f}s)", flush=True)
             self._last_params = dict(job.params)
 
             selected_index: int | None = None

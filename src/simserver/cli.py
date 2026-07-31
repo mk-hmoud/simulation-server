@@ -77,9 +77,14 @@ def cmd_worker(args: argparse.Namespace) -> None:
         worker_id=args.worker_id,
         memory_threshold_bytes=memory_threshold_bytes,
     )
-    if args.once:
-        processed = worker.process_one()
-        print("processed a job" if processed else "queue was empty")
+    max_jobs = 1 if args.once else args.max_jobs
+    if max_jobs is not None:
+        processed_count = 0
+        for _ in range(max_jobs):
+            if not worker.process_one():
+                break
+            processed_count += 1
+        print(f"processed {processed_count} job(s)")
     else:
         print(f"worker {args.worker_id!r} running against {args.db} (Ctrl-C to stop)")
         worker.run_forever()
@@ -147,7 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("worker")
     p.add_argument("--worker-id", default="worker-1")
-    p.add_argument("--once", action="store_true", help="process a single job and exit")
+    p.add_argument("--once", action="store_true", help="shorthand for --max-jobs 1")
+    p.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="process at most N jobs (draining the queue if fewer are available) then exit; omit to run forever",
+    )
     p.add_argument("--backend", choices=["fake", "mph"], default="fake")
     p.add_argument("--cores", type=int, default=None, help="only used with --backend mph")
     p.add_argument(
