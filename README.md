@@ -56,7 +56,21 @@ Built without a COMSOL license / VM access:
   solver/validation by phase) is still unverified against a real
   non-convergent solve or license failure — see the module docstring.
 
-Not yet built: mode selection / sweeps (M7), batches/dataset export (M8),
+- `src/simserver/mode_selection.py` — M7 (part 1 of 3): `nearest_neff_to_target`
+  mode selection, verified live end-to-end (real solve → selection → written
+  result matched the expected mode's values exactly). `core_power_fraction`
+  is an explicit stub — it needs a domain integration operator no checked-in
+  fixture has, and was deliberately not implemented blind.
+- Geometry-flag mesh-skip (M7, part 2 of 3) — already implemented since M3,
+  now verified live through the real `Worker`/`MphBackend` stack (not just
+  `FakeBackend` unit tests or the raw `mph_explore.py` script): a
+  non-geometry-only job skipped the rebuild entirely, a geometry-parameter
+  job triggered a 0.6s rebuild, consistent with earlier raw findings.
+- In-COMSOL sweeps (M7, part 3 of 3) — not yet started; needs fresh `mph`/Java
+  API exploration (how to configure a parametric sweep study extension),
+  unlike the other M6/M7 pieces which mostly built on already-confirmed API.
+
+Not yet built: in-COMSOL sweeps (M7 remainder), batches/dataset export (M8),
 service install/auth (M9).
 
 ## Dev setup
