@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import time
 
 
 def dump_tree(node, depth: int = 0, max_depth: int = 2) -> None:
@@ -30,6 +31,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path")
     parser.add_argument("--study", default="std1")
+    parser.add_argument("--sweep-param", default="l")
+    parser.add_argument("--values", nargs="+", default=["0.6[um]", "0.8[um]", "1.0[um]"])
+    parser.add_argument("--expression", default="real(emw.neff)")
     args = parser.parse_args()
 
     import mph
@@ -68,10 +72,44 @@ def main() -> int:
     print("\n--- study node tree after sweep creation ---")
     dump_tree(study)
 
+    print(f"\n--- setting pname={[args.sweep_param]!r}, plistarr=[{args.values!r}] ---")
+    try:
+        sweep.property("pname", [args.sweep_param])
+        sweep.property("plistarr", [list(args.values)])
+        print("set ok. properties now:")
+        for name in ("pname", "plistarr", "punit"):
+            print(f"  {name!r} = {sweep.property(name)!r}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"setting pname/plistarr FAILED: {exc!r}")
+        sweep.remove()
+        client.remove(model)
+        raise
+
+    print("\n--- solving the study (with sweep active) ---")
+    t0 = time.monotonic()
+    try:
+        model.solve(args.study)
+    except Exception as exc:  # noqa: BLE001
+        print(f"solve FAILED: {exc!r}")
+        raise
+    print(f"solve took {time.monotonic() - t0:.1f}s")
+
+    print(f"\n--- evaluate({args.expression!r}) with no outer= (default) ---")
+    result = model.evaluate(args.expression)
+    print(f"type={type(result)!r} shape={getattr(result, 'shape', None)!r}")
+    print(result)
+
+    for i in range(len(args.values)):
+        print(f"\n--- evaluate({args.expression!r}, outer={i}) ---")
+        try:
+            result_i = model.evaluate(args.expression, outer=i)
+            print(f"shape={getattr(result_i, 'shape', None)!r} -> {result_i!r}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"evaluate(outer={i}) FAILED: {exc!r}")
+
     sweep.remove()
     client.remove(model)
-    print("\ndone — use the property names/shapes above to write the real sweep-setting code,")
-    print("don't guess pname/plistarr shapes from general COMSOL API recollection")
+    print("\ndone")
     return 0
 
 
