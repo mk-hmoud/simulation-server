@@ -153,10 +153,12 @@ class Supervisor:
                 continue
             del self._procs[worker_id]
             # a job left 'running' here means the worker died mid-job (crash,
-            # not a clean recycle exit, which only happens between jobs)
+            # not a clean recycle/drain exit, which only happens between jobs)
             self._reconcile_dead_worker(worker_id, reason=f"worker exited unexpectedly (code {code})")
-            print(f"supervisor: {worker_id} exited (code {code}), respawning", flush=True)
-            self._spawn(worker_id)
+            print(f"supervisor: {worker_id} exited (code {code})", flush=True)
+        # respawning (if appropriate) happens uniformly in _top_up_pool(),
+        # whether this exit was a crash, a memory recycle, or a maintenance
+        # drain — it's the one place that knows whether to hold off
 
     def _check_watchdog(self) -> None:
         now = time.time()
@@ -181,7 +183,20 @@ class Supervisor:
                 max_attempts=self.config.max_attempts,
                 backoff_seconds=self.config.retry_backoff_s,
             )
-            self._spawn(worker_id)
+            # respawn handled by _top_up_pool(), same as _poll_workers()
+
+    def _top_up_pool(self) -> None:
+        """Bring the pool back to its configured size after any exit (crash,
+        memory recycle, or watchdog kill) — but never during maintenance mode
+        (plan §7): draining means the pool should shrink to zero and stay
+        there until resume, not get refilled the instant a worker exits."""
+        if q.get_maintenance_mode(self.conn):
+            return
+        for i in range(self.config.worker_count):
+            worker_id = f"worker-{i + 1}"
+            if worker_id not in self._procs:
+                print(f"supervisor: spawning {worker_id} (pool below target size)", flush=True)
+                self._spawn(worker_id)
 
     def run_forever(self) -> None:
         self.start()
@@ -199,6 +214,7 @@ class Supervisor:
             while not stop:
                 self._poll_workers()
                 self._check_watchdog()
+                self._top_up_pool()
                 time.sleep(self.config.poll_interval_s)
         except KeyboardInterrupt:
             pass

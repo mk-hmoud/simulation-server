@@ -88,7 +88,23 @@ Built without a COMSOL license / VM access:
   result (`neff_real`/`neff_imag`) matched an earlier standalone single-point
   solve at the same wavelength to ~13 significant digits.
 
-Not yet built: batches/dataset export (M8), service install/auth (M9).
+- `src/simserver/dataset.py` — M8: batches (`POST /batches`, one job per
+  `params_list` entry, sharing a `batch_id` — reserved for geometry variation,
+  where a rebuild is unavoidable per job anyway, as opposed to a sweep's
+  single-job in-COMSOL iteration), `GET /batches/{id}` aggregate status, and
+  `GET /batches/{id}/dataset.csv` flattening every job's results into one
+  dataframe-ready CSV (one row per job/sweep-point, scalar params as columns,
+  each output as a column with a `__imag` column only where actually used).
+  Maintenance mode (`POST /admin/drain`/`/admin/resume`) stops workers
+  claiming new jobs and, once each finishes its current job, exits the whole
+  process — verified live that idling isn't enough to free a COMSOL license
+  (it's bound to the process for its lifetime), so the worker must actually
+  exit, and the supervisor must not respawn it until resume. Verified locally
+  end-to-end via the CLI: a 3-job batch producing a correct flattened CSV,
+  and a real 2-worker supervisor cleanly draining (both workers exit, no
+  respawn) and resuming (both respawned) on command.
+
+Not yet built: service install/auth (M9).
 
 ## Dev setup
 

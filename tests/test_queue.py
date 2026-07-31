@@ -173,3 +173,60 @@ def test_claim_ignores_jobs_whose_not_before_has_passed(tmp_path: Path) -> None:
     job = q.claim_next_job(conn, "worker-2")
     assert job is not None
     assert job.id == job_id
+
+
+def test_maintenance_mode_defaults_off(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    assert q.get_maintenance_mode(conn) is False
+
+
+def test_maintenance_mode_toggles(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.set_maintenance_mode(conn, True)
+    assert q.get_maintenance_mode(conn) is True
+    q.set_maintenance_mode(conn, False)
+    assert q.get_maintenance_mode(conn) is False
+
+
+def test_claim_next_job_refuses_to_claim_during_maintenance(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    q.enqueue_job(conn, "m1", {})
+    q.set_maintenance_mode(conn, True)
+
+    assert q.claim_next_job(conn, "worker-1") is None
+
+    q.set_maintenance_mode(conn, False)
+    job = q.claim_next_job(conn, "worker-1")
+    assert job is not None
+
+
+def test_batch_summary_none_for_unknown_batch(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    assert q.batch_summary(conn, "does-not-exist") is None
+
+
+def test_batch_summary_counts_by_status(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    j1 = q.enqueue_job(conn, "m1", {}, batch_id="batch-1")
+    q.enqueue_job(conn, "m1", {}, batch_id="batch-1")
+    q.enqueue_job(conn, "m1", {})  # not in the batch
+
+    q.claim_next_job(conn, "worker-1")  # claims j1 (oldest queued)
+    q.mark_done(conn, j1)
+
+    summary = q.batch_summary(conn, "batch-1")
+    assert summary["total"] == 2
+    assert summary["depth"] == {"done": 1, "queued": 1}
+
+
+def test_list_batch_jobs_excludes_other_batches(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    j1 = q.enqueue_job(conn, "m1", {}, batch_id="batch-1")
+    j2 = q.enqueue_job(conn, "m1", {}, batch_id="batch-1")
+    q.enqueue_job(conn, "m1", {}, batch_id="batch-2")
+
+    jobs = q.list_batch_jobs(conn, "batch-1")
+    assert [j["id"] for j in jobs] == [j1, j2]

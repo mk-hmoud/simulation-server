@@ -65,3 +65,49 @@ def test_enqueue_params_file_handles_utf8_bom(db_path: Path, tmp_path: Path) -> 
 def test_enqueue_unknown_model_with_default_outputs_errors_clearly(db_path: Path) -> None:
     with pytest.raises(SystemExit, match="unknown model_id"):
         run(db_path, "enqueue", "does-not-exist")
+
+
+def test_batch_enqueues_one_job_per_entry_with_shared_batch_id(db_path: Path) -> None:
+    run(db_path, "batch", "m1", "--params-list", '[{"pitch": "1[um]"}, {"pitch": "2[um]"}]')
+
+    conn = db.connect(db_path)
+    jobs = conn.execute("SELECT id, batch_id FROM jobs ORDER BY id").fetchall()
+    assert len(jobs) == 2
+    assert jobs[0]["batch_id"] == jobs[1]["batch_id"]
+    assert jobs[0]["batch_id"] is not None
+
+
+def test_batch_requires_params_list_or_file(db_path: Path) -> None:
+    with pytest.raises(SystemExit, match="params-list"):
+        run(db_path, "batch", "m1")
+
+
+def test_batch_rejects_empty_list(db_path: Path) -> None:
+    with pytest.raises(SystemExit, match="non-empty"):
+        run(db_path, "batch", "m1", "--params-list", "[]")
+
+
+def test_admin_drain_and_resume_via_cli(db_path: Path) -> None:
+    conn = db.connect(db_path)
+    assert q.get_maintenance_mode(conn) is False
+
+    run(db_path, "admin", "drain")
+    assert q.get_maintenance_mode(conn) is True
+
+    run(db_path, "admin", "resume")
+    assert q.get_maintenance_mode(conn) is False
+
+
+def test_dataset_writes_csv_to_file(db_path: Path, tmp_path: Path) -> None:
+    run(db_path, "batch", "m1", "--params-list", '[{"pitch": "1[um]"}]')
+    conn = db.connect(db_path)
+    job = q.claim_next_job(conn, "worker-1")
+    q.write_result(conn, job.id, "neff_real", 1.44)
+    batch_id = conn.execute("SELECT batch_id FROM jobs WHERE id=?", (job.id,)).fetchone()["batch_id"]
+
+    out_path = tmp_path / "out.csv"
+    run(db_path, "dataset", batch_id, "--output", str(out_path))
+
+    content = out_path.read_text()
+    assert "pitch" in content
+    assert "1.44" in content

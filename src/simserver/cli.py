@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import uuid
 from pathlib import Path
 
 from . import config, db
@@ -123,6 +124,67 @@ def cmd_results(args: argparse.Namespace) -> None:
         print(dict(row))
 
 
+def cmd_batch(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    if args.params_list is None and args.params_list_file is None:
+        raise SystemExit("one of --params-list or --params-list-file is required")
+    params_list = _load_json_arg(args.params_list or "[]", args.params_list_file)
+    if not isinstance(params_list, list) or not params_list:
+        raise SystemExit("params_list must be a non-empty JSON array of parameter dicts")
+
+    if args.outputs is None and args.outputs_file is None:
+        model_row = q.get_model(conn, args.model_id)
+        if model_row is None:
+            raise SystemExit(f"unknown model_id {args.model_id!r}")
+        outputs = json.loads(model_row["manifest_json"]).get("outputs", {})
+    else:
+        outputs = _load_json_arg(args.outputs or "{}", args.outputs_file)
+
+    batch_id = uuid.uuid4().hex
+    job_ids = [
+        q.enqueue_job(conn, args.model_id, params, batch_id=batch_id, outputs=outputs, priority=args.priority)
+        for params in params_list
+    ]
+    print(f"enqueued batch {batch_id} ({len(job_ids)} jobs): {job_ids}")
+
+
+def cmd_batches(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    summary = q.batch_summary(conn, args.batch_id)
+    if summary is None:
+        raise SystemExit(f"unknown batch_id {args.batch_id!r}")
+    print(summary)
+
+
+def cmd_dataset(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    from . import dataset
+
+    csv_text = dataset.batch_dataset_csv(conn, args.batch_id)
+    if args.output:
+        Path(args.output).write_text(csv_text)
+        print(f"wrote {args.output}")
+    else:
+        print(csv_text, end="")
+
+
+def cmd_admin_drain(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    q.set_maintenance_mode(conn, True)
+    print("maintenance mode: on. Poll `simserver queue` to see when running jobs finish and workers exit.")
+
+
+def cmd_admin_resume(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    q.set_maintenance_mode(conn, False)
+    print("maintenance mode: off")
+
+
+def cmd_queue(args: argparse.Namespace) -> None:
+    conn = _connect(args)
+    print(q.queue_summary(conn))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="simserver")
     parser.add_argument("--db", type=Path, default=config.DB_PATH, help="path to jobs.db")
@@ -186,6 +248,34 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("results")
     p.add_argument("job_id", type=int)
     p.set_defaults(func=cmd_results)
+
+    p = sub.add_parser("batch")
+    p.add_argument("model_id")
+    p.add_argument("--params-list", default=None, help="JSON array of parameter dicts, one job per entry")
+    p.add_argument("--params-list-file", help="path to a JSON file, alternative to --params-list")
+    p.add_argument("--outputs", default=None, help="JSON dict of {output_name: expression}; omit for all manifest outputs")
+    p.add_argument("--outputs-file", help="path to a JSON file, alternative to --outputs")
+    p.add_argument("--priority", type=int, default=0)
+    p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("batches")
+    p.add_argument("batch_id")
+    p.set_defaults(func=cmd_batches)
+
+    p = sub.add_parser("dataset")
+    p.add_argument("batch_id")
+    p.add_argument("--output", help="write CSV to this path instead of stdout")
+    p.set_defaults(func=cmd_dataset)
+
+    p = sub.add_parser("queue")
+    p.set_defaults(func=cmd_queue)
+
+    admin = sub.add_parser("admin")
+    admin_sub = admin.add_subparsers(dest="admin_command", required=True)
+    p = admin_sub.add_parser("drain")
+    p.set_defaults(func=cmd_admin_drain)
+    p = admin_sub.add_parser("resume")
+    p.set_defaults(func=cmd_admin_resume)
 
     return parser
 

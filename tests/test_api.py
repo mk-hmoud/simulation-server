@@ -226,3 +226,99 @@ def test_queue_summary(client: TestClient) -> None:
     summary = client.get("/queue").json()
     assert summary["depth"] == {"queued": 2}
     assert summary["running"] == []
+    assert summary["maintenance_mode"] is False
+
+
+def test_create_batch_enqueues_one_job_per_params_entry(client: TestClient) -> None:
+    register_model(client)
+    response = client.post(
+        "/batches",
+        json={
+            "model_id": "spr_pcf_v1",
+            "params_list": [{"pitch": "1.5[um]"}, {"pitch": "2.0[um]"}, {"pitch": "2.5[um]"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["job_ids"]) == 3
+
+    summary = client.get(f"/batches/{body['batch_id']}").json()
+    assert summary["total"] == 3
+    assert summary["depth"] == {"queued": 3}
+
+
+def test_create_batch_rejects_empty_params_list(client: TestClient) -> None:
+    register_model(client)
+    response = client.post("/batches", json={"model_id": "spr_pcf_v1", "params_list": []})
+    assert response.status_code == 400
+
+
+def test_create_batch_validates_every_entry(client: TestClient) -> None:
+    register_model(client)
+    response = client.post(
+        "/batches",
+        json={"model_id": "spr_pcf_v1", "params_list": [{"pitch": "1.5[um]"}, {"pitch": "9999[um]"}]},
+    )
+    assert response.status_code == 400
+    assert "outside allowed range" in response.json()["detail"]
+
+
+def test_create_batch_for_unknown_model_is_404(client: TestClient) -> None:
+    response = client.post("/batches", json={"model_id": "nope", "params_list": [{}]})
+    assert response.status_code == 404
+
+
+def test_get_unknown_batch_is_404(client: TestClient) -> None:
+    assert client.get("/batches/does-not-exist").status_code == 404
+    assert client.get("/batches/does-not-exist/dataset.csv").status_code == 404
+
+
+def test_batch_dataset_csv_reflects_written_results(client: TestClient) -> None:
+    register_model(client)
+    batch_id = client.post(
+        "/batches",
+        json={"model_id": "spr_pcf_v1", "params_list": [{"pitch": "1.5[um]"}]},
+    ).json()["batch_id"]
+
+    from simserver import queue as q
+
+    override = app.dependency_overrides[get_db]
+    conn_gen = override()
+    conn = next(conn_gen)
+    job = q.claim_next_job(conn, "worker-1")
+    q.write_result(conn, job.id, "neff_real", 1.44)
+
+    response = client.get(f"/batches/{batch_id}/dataset.csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "pitch" in response.text
+    assert "1.44" in response.text
+
+
+def test_admin_drain_and_resume_toggle_maintenance_mode(client: TestClient) -> None:
+    assert client.get("/queue").json()["maintenance_mode"] is False
+
+    response = client.post("/admin/drain")
+    assert response.status_code == 200
+    assert response.json()["maintenance_mode"] is True
+    assert client.get("/queue").json()["maintenance_mode"] is True
+
+    response = client.post("/admin/resume")
+    assert response.json()["maintenance_mode"] is False
+    assert client.get("/queue").json()["maintenance_mode"] is False
+
+
+def test_jobs_are_not_claimable_while_drained(client: TestClient) -> None:
+    register_model(client)
+    client.post("/jobs", json={"model_id": "spr_pcf_v1", "params": {}})
+    client.post("/admin/drain")
+
+    from simserver import queue as q
+
+    override = app.dependency_overrides[get_db]
+    conn_gen = override()
+    conn = next(conn_gen)
+    assert q.claim_next_job(conn, "worker-1") is None
+
+    client.post("/admin/resume")
+    assert q.claim_next_job(conn, "worker-1") is not None

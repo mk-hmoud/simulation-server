@@ -61,6 +61,14 @@ CREATE TABLE IF NOT EXISTS artifacts (
     path TEXT NOT NULL,
     bytes INTEGER
 );
+
+-- small key/value store for cross-process admin state (plan §7 maintenance
+-- mode); a table rather than a config file so every worker/supervisor
+-- connection sees the same value immediately, no polling a separate file
+CREATE TABLE IF NOT EXISTS admin_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 

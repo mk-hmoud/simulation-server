@@ -205,7 +205,18 @@ class Worker:
 
     def run_forever(self) -> None:
         while True:
-            if not self.process_one():
+            processed = self.process_one()
+            # checked every iteration, not just when idle: the currently
+            # in-flight job (if any) already finished via process_one() above,
+            # so "lets running jobs finish" is satisfied — but the license is
+            # only actually released once this process exits (plan §7 hard
+            # constraint: mph binds a session to the process for its whole
+            # lifetime), so an idle-but-still-running worker would NOT free
+            # the seat; it must exit, not just stop claiming
+            if q.get_maintenance_mode(self.conn):
+                print(f"worker {self.worker_id}: maintenance mode active, exiting to release the license", flush=True)
+                return
+            if not processed:
                 time.sleep(self.poll_interval)
                 continue
             if self._should_recycle():

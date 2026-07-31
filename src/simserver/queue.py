@@ -66,11 +66,29 @@ class ClaimedJob:
     priority: int
 
 
+def get_maintenance_mode(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("SELECT value FROM admin_state WHERE key='maintenance_mode'").fetchone()
+    return row is not None and row["value"] == "on"
+
+
+def set_maintenance_mode(conn: sqlite3.Connection, enabled: bool) -> None:
+    conn.execute(
+        "INSERT INTO admin_state (key, value) VALUES ('maintenance_mode', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        ("on" if enabled else "off",),
+    )
+
+
 def claim_next_job(
     conn: sqlite3.Connection,
     worker_id: str,
     preferred_model_id: str | None = None,
 ) -> ClaimedJob | None:
+    if get_maintenance_mode(conn):
+        # plan §7: maintenance mode stops workers claiming new jobs; a running
+        # job still finishes normally (this check is only in the claim path)
+        return None
+
     conn.execute("BEGIN IMMEDIATE")
     try:
         now = _now()
@@ -141,7 +159,7 @@ def queue_summary(conn: sqlite3.Connection) -> dict[str, Any]:
             "ORDER BY started_at"
         )
     ]
-    return {"depth": depth, "running": running}
+    return {"depth": depth, "running": running, "maintenance_mode": get_maintenance_mode(conn)}
 
 
 def mark_done(conn: sqlite3.Connection, job_id: int) -> None:
@@ -236,3 +254,17 @@ def list_mode_selection(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.R
         "WHERE job_id = ? ORDER BY sweep_index",
         (job_id,),
     ).fetchall()
+
+
+def list_batch_jobs(conn: sqlite3.Connection, batch_id: str) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM jobs WHERE batch_id = ? ORDER BY id", (batch_id,)).fetchall()
+
+
+def batch_summary(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any] | None:
+    jobs = list_batch_jobs(conn, batch_id)
+    if not jobs:
+        return None
+    depth: dict[str, int] = {}
+    for job in jobs:
+        depth[job["status"]] = depth.get(job["status"], 0) + 1
+    return {"batch_id": batch_id, "total": len(jobs), "depth": depth}

@@ -94,7 +94,7 @@ def test_start_succeeds_when_workers_survive_grace_period(tmp_path: Path, monkey
 def test_poll_workers_reconciles_orphaned_job_and_respawns(
     tmp_path: Path, registered_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    supervisor = make_supervisor(tmp_path, max_attempts=2, retry_backoff_s=0)
+    supervisor = make_supervisor(tmp_path, worker_count=1, max_attempts=2, retry_backoff_s=0)
     monkeypatch.setattr(
         supervisor,
         "_worker_cmd",
@@ -111,6 +111,7 @@ def test_poll_workers_reconciles_orphaned_job_and_respawns(
 
     try:
         supervisor._poll_workers()
+        supervisor._top_up_pool()  # respawning now happens here, not inside _poll_workers()
 
         row = registered_conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert row["status"] == "queued"
@@ -154,7 +155,7 @@ def test_watchdog_kills_hung_worker_and_reconciles_job(
 ) -> None:
     # MANIFEST declares timeout_seconds=0.2, so a job "started" now is already
     # overdue by the time we sleep past it
-    supervisor = make_supervisor(tmp_path, max_attempts=2, retry_backoff_s=0)
+    supervisor = make_supervisor(tmp_path, worker_count=1, max_attempts=2, retry_backoff_s=0)
     monkeypatch.setattr(
         supervisor,
         "_worker_cmd",
@@ -170,6 +171,7 @@ def test_watchdog_kills_hung_worker_and_reconciles_job(
 
     try:
         supervisor._check_watchdog()
+        supervisor._top_up_pool()  # respawning now happens here, not inside _check_watchdog()
 
         assert proc.poll() is not None, "watchdog should have killed the hung worker process"
         row = registered_conn.execute("SELECT status, error_message FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -202,5 +204,57 @@ def test_watchdog_leaves_jobs_within_timeout_alone(
         assert proc.poll() is None
         row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert row["status"] == "running"
+    finally:
+        supervisor.shutdown()
+
+
+def test_top_up_pool_spawns_missing_workers_up_to_configured_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = make_supervisor(tmp_path, worker_count=2)
+    monkeypatch.setattr(
+        supervisor,
+        "_worker_cmd",
+        lambda worker_id: [sys.executable, "-c", "import time; time.sleep(9999)"],
+    )
+
+    try:
+        supervisor._top_up_pool()
+        assert set(supervisor._procs) == {"worker-1", "worker-2"}
+    finally:
+        supervisor.shutdown()
+
+
+def test_top_up_pool_does_not_spawn_during_maintenance_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = make_supervisor(tmp_path, worker_count=2)
+    monkeypatch.setattr(
+        supervisor,
+        "_worker_cmd",
+        lambda worker_id: [sys.executable, "-c", "import time; time.sleep(9999)"],
+    )
+    q.set_maintenance_mode(supervisor.conn, True)
+
+    try:
+        supervisor._top_up_pool()
+        assert supervisor._procs == {}
+    finally:
+        supervisor.shutdown()
+
+
+def test_top_up_pool_leaves_existing_workers_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = make_supervisor(tmp_path, worker_count=1)
+    monkeypatch.setattr(
+        supervisor,
+        "_worker_cmd",
+        lambda worker_id: [sys.executable, "-c", "import time; time.sleep(9999)"],
+    )
+
+    try:
+        supervisor._top_up_pool()
+        first_proc = supervisor._procs["worker-1"]
+        supervisor._top_up_pool()  # already at target size — must not touch it
+        assert supervisor._procs["worker-1"] is first_proc
     finally:
         supervisor.shutdown()

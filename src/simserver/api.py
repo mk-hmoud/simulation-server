@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from typing import Iterator
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ValidationError
 
 from . import config, db
+from . import dataset
 from . import queue as q
 from . import storage
 from .manifest import Manifest, ManifestValidationError, resolve_outputs, validate_params
@@ -44,6 +46,15 @@ class JobCreate(BaseModel):
     # a list value is a sweep request (plan §7) — only valid for the
     # manifest's sweep_parameter, enforced by validate_params
     params: dict[str, str | list[str]] = {}
+    outputs: list[str] | None = None
+    priority: int = 0
+
+
+class BatchCreate(BaseModel):
+    model_id: str
+    # one job per entry (plan §7: batches are for geometry variation, where a
+    # rebuild is unavoidable anyway — unlike a sweep, which is one job)
+    params_list: list[dict[str, str | list[str]]]
     outputs: list[str] | None = None
     priority: int = 0
 
@@ -138,4 +149,59 @@ def cancel_job(job_id: int, conn: sqlite3.Connection = Depends(get_db)) -> dict:
 
 @app.get("/queue")
 def get_queue(conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return q.queue_summary(conn)
+
+
+@app.post("/batches")
+def create_batch(batch: BatchCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    model_row = _get_model_or_404(conn, batch.model_id)
+    manifest = _load_manifest(model_row)
+
+    if not batch.params_list:
+        raise HTTPException(status_code=400, detail="params_list must not be empty")
+
+    try:
+        for params in batch.params_list:
+            validate_params(manifest, params)
+        outputs = resolve_outputs(manifest, batch.outputs)
+    except ManifestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    batch_id = uuid.uuid4().hex
+    job_ids = [
+        q.enqueue_job(conn, batch.model_id, params, batch_id=batch_id, outputs=outputs, priority=batch.priority)
+        for params in batch.params_list
+    ]
+    return {"batch_id": batch_id, "job_ids": job_ids}
+
+
+@app.get("/batches/{batch_id}")
+def get_batch(batch_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    summary = q.batch_summary(conn, batch_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"unknown batch_id {batch_id!r}")
+    return summary
+
+
+@app.get("/batches/{batch_id}/dataset.csv")
+def get_batch_dataset(batch_id: str, conn: sqlite3.Connection = Depends(get_db)) -> Response:
+    if q.batch_summary(conn, batch_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown batch_id {batch_id!r}")
+    csv_text = dataset.batch_dataset_csv(conn, batch_id)
+    return Response(content=csv_text, media_type="text/csv")
+
+
+@app.post("/admin/drain")
+def admin_drain(conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    """Plan §7 maintenance mode: stops workers claiming new jobs and, once
+    each finishes its current job (if any), exits — actually releasing the
+    license, not just idling. Poll GET /queue's "running" list to see when
+    the seat is actually clear."""
+    q.set_maintenance_mode(conn, True)
+    return q.queue_summary(conn)
+
+
+@app.post("/admin/resume")
+def admin_resume(conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    q.set_maintenance_mode(conn, False)
     return q.queue_summary(conn)
