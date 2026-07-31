@@ -82,6 +82,12 @@ Built without a COMSOL license / VM access:
   whole M6/M7 arc — still deferred pending a fixture with a real domain
   selection.
 
+  Verified live end-to-end against the real fixture (3-point wavelength
+  sweep combined with mode selection): each point's mode selection ran
+  independently (6 modes considered each), and the middle point's written
+  result (`neff_real`/`neff_imag`) matched an earlier standalone single-point
+  solve at the same wavelength to ~13 significant digits.
+
 Not yet built: batches/dataset export (M8), service install/auth (M9).
 
 ## Dev setup
