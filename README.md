@@ -133,7 +133,24 @@ Built without a COMSOL license / VM access:
   `uvicorn` process: login → dashboard → model detail → job submission →
   worker processes it → job detail page shows the result, with the correct
   `owner_user_id`; non-admin correctly blocked (403) from `/ui/admin`,
-  `/ui/users`, `/ui/models/new`.
+  `/ui/users`.
+  Model registration (`/ui/models/new`) is open to any logged-in
+  researcher, not just admins — `models.owner_user_id` (same guarded
+  `ALTER TABLE`-on-missing-column migration pattern as `jobs.owner_user_id`)
+  is stamped on first registration and left untouched by re-registration
+  (`register_model`'s `ON CONFLICT` clause never overwrites it), so
+  overwriting an *existing* model_id is blocked with 403 unless you're its
+  owner or an admin — this also doubles as collision protection between
+  researchers picking the same model_id. Deleting a model
+  (`POST /ui/models/{id}/delete`, or `DELETE /models/{id}` on the JSON API,
+  admin-key gated there since the JSON API has no per-caller identity) is
+  allowed for the model's owner or an admin; the FK from `jobs.model_id`
+  (no cascade) already prevented deleting a model with job/result history,
+  so `queue.delete_model` just catches that `sqlite3.IntegrityError` and
+  re-raises it as a clean `ModelInUseError` (409 in both the API and the
+  UI) instead of a raw 500 — deleting a model was never unsafe so much as
+  simply unwired; the model's files on disk are removed via
+  `storage.delete_model_files` only after the DB delete succeeds.
 
 ## Deployment (M9)
 

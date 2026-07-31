@@ -2,19 +2,18 @@
 {% block title %}Models — simulation-server{% endblock %}
 {% block content %}
 <h1>Models</h1>
-{% if user.is_admin %}
 <a class="button" href="/ui/models/new">Register new model</a>
-{% endif %}
 <table>
-  <tr><th>Model ID</th><th>Description</th><th>Registered</th></tr>
+  <tr><th>Model ID</th><th>Description</th><th>Owner</th><th>Registered</th></tr>
   {% for model in models %}
   <tr>
     <td><a class="plain" href="/ui/models/{{ model.model_id }}">{{ model.model_id }}</a></td>
     <td>{{ model.description }}</td>
+    <td>{{ model.owner_username or "—" }}</td>
     <td>{{ model.created_at }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="3" class="muted">No models registered yet.</td></tr>
+  <tr><td colspan="4" class="muted">No models registered yet.</td></tr>
   {% endfor %}
 </table>
 {% endblock %}

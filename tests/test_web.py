@@ -289,17 +289,161 @@ def test_non_admin_blocked_from_users_page(app_client) -> None:
     assert client.get("/ui/users").status_code == 403
 
 
-def test_non_admin_blocked_from_model_registration(app_client) -> None:
+def test_non_admin_can_register_a_new_model(app_client) -> None:
     client, tmp_path = app_client
     conn = make_conn(tmp_path)
-    login(client, conn, admin=False)
-    assert client.get("/ui/models/new").status_code == 403
+    user_id = login(client, conn, admin=False)
+
+    assert client.get("/ui/models/new").status_code == 200
     response = client.post(
         "/ui/models/new",
         data={"manifest": json.dumps({"model_id": "x", "parameters": {}})},
         files={"file": ("model.mph", b"stub")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    row = q.get_model(conn, "x")
+    assert row is not None
+    assert row["owner_user_id"] == user_id
+
+
+def test_non_owner_non_admin_cannot_overwrite_someone_elses_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "shared", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+    client.post("/ui/logout")
+    login(client, conn, username="bob", admin=False)
+
+    response = client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "shared", "parameters": {}})},
+        files={"file": ("model.mph", b"stub2")},
     )
     assert response.status_code == 403
+    # must not have overwritten alice's file
+    assert json.loads(conn.execute("SELECT manifest_json FROM models WHERE id='shared'").fetchone()[0])
+
+
+def test_owner_can_reregister_their_own_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "mine", "description": "v1", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+
+    response = client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "mine", "description": "v2", "parameters": {}})},
+        files={"file": ("model.mph", b"stub2")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    manifest = json.loads(q.get_model(conn, "mine")["manifest_json"])
+    assert manifest["description"] == "v2"
+
+
+def test_admin_can_overwrite_anyones_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "shared2", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+    client.post("/ui/logout")
+    login(client, conn, username="admin", admin=True)
+
+    response = client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "shared2", "description": "fixed", "parameters": {}})},
+        files={"file": ("model.mph", b"stub2")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    # ownership stays with alice even though admin updated it
+    assert q.get_model(conn, "shared2")["owner_user_id"] is not None
+
+
+def test_owner_can_delete_their_own_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "deleteme", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+
+    response = client.post("/ui/models/deleteme/delete", follow_redirects=False)
+    assert response.status_code == 303
+    assert q.get_model(conn, "deleteme") is None
+
+
+def test_non_owner_non_admin_cannot_delete_someone_elses_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "notyours", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+    client.post("/ui/logout")
+    login(client, conn, username="bob", admin=False)
+
+    response = client.post("/ui/models/notyours/delete")
+    assert response.status_code == 403
+    assert q.get_model(conn, "notyours") is not None
+
+
+def test_deleting_a_model_with_jobs_shows_clean_error_not_crash(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    login(client, conn, username="alice", admin=False)
+    client.post(
+        "/ui/models/new",
+        data={"manifest": json.dumps({"model_id": "inuse", "parameters": {}})},
+        files={"file": ("model.mph", b"stub")},
+    )
+    client.post("/ui/models/inuse/jobs", data={})
+
+    response = client.post("/ui/models/inuse/delete")
+    assert response.status_code == 409
+    assert "still has jobs referencing it" in response.text
+    assert q.get_model(conn, "inuse") is not None  # not deleted
+
+
+def test_admin_can_delete_ownerless_model(app_client) -> None:
+    """A model registered via the CLI/JSON API has no owner (no per-caller
+    identity there) — only an admin can manage it through the web UI."""
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "cli_model", str(tmp_path / "m.mph"), {"model_id": "cli_model", "parameters": {}})
+    login(client, conn, username="admin", admin=True)
+
+    response = client.post("/ui/models/cli_model/delete", follow_redirects=False)
+    assert response.status_code == 303
+    assert q.get_model(conn, "cli_model") is None
+
+
+def test_non_admin_cannot_delete_ownerless_model(app_client) -> None:
+    client, tmp_path = app_client
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "cli_model2", str(tmp_path / "m.mph"), {"model_id": "cli_model2", "parameters": {}})
+    login(client, conn, username="researcher", admin=False)
+
+    response = client.post("/ui/models/cli_model2/delete")
+    assert response.status_code == 403
+    assert q.get_model(conn, "cli_model2") is not None
 
 
 def test_admin_drain_and_resume_via_ui(app_client) -> None:

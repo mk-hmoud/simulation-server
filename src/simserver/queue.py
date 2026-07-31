@@ -19,16 +19,30 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
 
+class ModelInUseError(Exception):
+    """Raised by delete_model() when jobs still reference the model — the
+    models(id) foreign key (no cascade) already refuses this at the DB level;
+    this just turns that into a clean, catchable error instead of a raw
+    sqlite3.IntegrityError, since a model with real job/result history behind
+    it must not be deletable (that history is the actual point of the system,
+    plan §8 — cascading the delete would silently destroy it)."""
+
+
 def register_model(
     conn: sqlite3.Connection,
     model_id: str,
     path: str,
     manifest: dict[str, Any] | None = None,
+    *,
+    owner_user_id: int | None = None,
 ) -> None:
+    # owner_user_id is only set on first INSERT, never touched by the
+    # ON CONFLICT UPDATE branch — re-registering an existing model_id (an
+    # update, by its owner or an admin) must not silently change who owns it
     conn.execute(
-        "INSERT INTO models (id, path, manifest_json, created_at) VALUES (?, ?, ?, ?) "
+        "INSERT INTO models (id, path, manifest_json, created_at, owner_user_id) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET path=excluded.path, manifest_json=excluded.manifest_json",
-        (model_id, path, json.dumps(manifest or {}), _now()),
+        (model_id, path, json.dumps(manifest or {}), _now(), owner_user_id),
     )
 
 
@@ -38,6 +52,21 @@ def get_model(conn: sqlite3.Connection, model_id: str) -> sqlite3.Row | None:
 
 def list_models(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM models ORDER BY created_at").fetchall()
+
+
+def delete_model(conn: sqlite3.Connection, model_id: str) -> bool:
+    """Returns False if the model doesn't exist. Raises ModelInUseError if
+    any job references it — see ModelInUseError's docstring."""
+    if get_model(conn, model_id) is None:
+        return False
+    try:
+        conn.execute("DELETE FROM models WHERE id = ?", (model_id,))
+    except sqlite3.IntegrityError as exc:
+        raise ModelInUseError(
+            f"model {model_id!r} still has jobs referencing it — it can only be deleted "
+            "once none of its jobs remain"
+        ) from exc
+    return True
 
 
 def enqueue_job(

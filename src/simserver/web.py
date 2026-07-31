@@ -105,6 +105,19 @@ def dashboard(
     )
 
 
+def _owner_username(conn: sqlite3.Connection, owner_user_id: int | None) -> str | None:
+    if owner_user_id is None:
+        return None
+    owner_row = q.get_user(conn, owner_user_id)
+    return owner_row["username"] if owner_row else f"user#{owner_user_id}"
+
+
+def _can_manage_model(user: sqlite3.Row, model_row: sqlite3.Row) -> bool:
+    """Owner or admin. An ownerless model (registered via the CLI/JSON API,
+    which have no per-caller identity) can only be managed by an admin."""
+    return bool(user["is_admin"]) or model_row["owner_user_id"] == user["id"]
+
+
 @router.get("/models", response_class=HTMLResponse)
 def models_list(
     request: Request,
@@ -115,7 +128,12 @@ def models_list(
     for row in q.list_models(conn):
         manifest = json.loads(row["manifest_json"])
         models.append(
-            {"model_id": row["id"], "description": manifest.get("description", ""), "created_at": row["created_at"]}
+            {
+                "model_id": row["id"],
+                "description": manifest.get("description", ""),
+                "created_at": row["created_at"],
+                "owner_username": _owner_username(conn, row["owner_user_id"]),
+            }
         )
     return templates.TemplateResponse(request, "models_list.html", {"user": user, "models": models})
 
@@ -123,7 +141,7 @@ def models_list(
 # NOTE: /models/new must be registered before /models/{model_id}, or FastAPI
 # would match "new" as a model_id (literal path segments must come first)
 @router.get("/models/new", response_class=HTMLResponse)
-def model_new_form(request: Request, user: sqlite3.Row = Depends(require_admin)):
+def model_new_form(request: Request, user: sqlite3.Row = Depends(require_login)):
     return templates.TemplateResponse(request, "model_new.html", {"user": user, "error": None})
 
 
@@ -132,7 +150,7 @@ def model_new_submit(
     request: Request,
     manifest: str = Form(...),
     file: UploadFile = File(...),
-    user: sqlite3.Row = Depends(require_admin),
+    user: sqlite3.Row = Depends(require_login),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     try:
@@ -141,9 +159,24 @@ def model_new_submit(
         return templates.TemplateResponse(
             request, "model_new.html", {"user": user, "error": str(exc)}, status_code=400
         )
+
+    existing = q.get_model(conn, parsed.model_id)
+    if existing is not None and not _can_manage_model(user, existing):
+        owner = _owner_username(conn, existing["owner_user_id"]) or "an admin"
+        return templates.TemplateResponse(
+            request,
+            "model_new.html",
+            {
+                "user": user,
+                "error": f"model_id {parsed.model_id!r} already exists, owned by {owner} — "
+                "pick a different model_id, or ask them (or an admin) to update it",
+            },
+            status_code=403,
+        )
+
     mph_bytes = file.file.read()
     model_path = storage.save_model(parsed.model_id, mph_bytes, parsed)
-    q.register_model(conn, parsed.model_id, str(model_path), parsed.model_dump())
+    q.register_model(conn, parsed.model_id, str(model_path), parsed.model_dump(), owner_user_id=user["id"])
     return RedirectResponse(url=f"/ui/models/{parsed.model_id}", status_code=303)
 
 
@@ -157,8 +190,49 @@ def model_detail(
     model_row = get_model_or_404(conn, model_id)
     manifest = load_manifest(model_row)
     return templates.TemplateResponse(
-        request, "model_detail.html", {"user": user, "model_id": model_id, "manifest": manifest, "error": None}
+        request,
+        "model_detail.html",
+        {
+            "user": user,
+            "model_id": model_id,
+            "manifest": manifest,
+            "owner_username": _owner_username(conn, model_row["owner_user_id"]),
+            "can_manage": _can_manage_model(user, model_row),
+            "error": None,
+        },
     )
+
+
+@router.post("/models/{model_id}/delete")
+def delete_model_ui(
+    model_id: str,
+    request: Request,
+    user: sqlite3.Row = Depends(require_login),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    model_row = get_model_or_404(conn, model_id)
+    if not _can_manage_model(user, model_row):
+        raise HTTPException(status_code=403, detail="only the model's owner or an admin can delete it")
+
+    manifest = load_manifest(model_row)
+    try:
+        q.delete_model(conn, model_id)
+    except q.ModelInUseError as exc:
+        return templates.TemplateResponse(
+            request,
+            "model_detail.html",
+            {
+                "user": user,
+                "model_id": model_id,
+                "manifest": manifest,
+                "owner_username": _owner_username(conn, model_row["owner_user_id"]),
+                "can_manage": True,
+                "error": str(exc),
+            },
+            status_code=409,
+        )
+    storage.delete_model_files(model_id)
+    return RedirectResponse(url="/ui/models", status_code=303)
 
 
 @router.post("/models/{model_id}/jobs")
@@ -196,7 +270,14 @@ async def submit_job(
         return templates.TemplateResponse(
             request,
             "model_detail.html",
-            {"user": user, "model_id": model_id, "manifest": manifest, "error": str(exc)},
+            {
+                "user": user,
+                "model_id": model_id,
+                "manifest": manifest,
+                "owner_username": _owner_username(conn, model_row["owner_user_id"]),
+                "can_manage": _can_manage_model(user, model_row),
+                "error": str(exc),
+            },
             status_code=400,
         )
 
@@ -228,7 +309,14 @@ def submit_batch(
         return templates.TemplateResponse(
             request,
             "model_detail.html",
-            {"user": user, "model_id": model_id, "manifest": manifest, "error": str(exc)},
+            {
+                "user": user,
+                "model_id": model_id,
+                "manifest": manifest,
+                "owner_username": _owner_username(conn, model_row["owner_user_id"]),
+                "can_manage": _can_manage_model(user, model_row),
+                "error": str(exc),
+            },
             status_code=400,
         )
 

@@ -74,6 +74,26 @@ def test_get_unknown_model_is_404(client: TestClient) -> None:
     assert client.get("/models/does-not-exist").status_code == 404
 
 
+def test_delete_model_removes_it(client: TestClient) -> None:
+    register_model(client)
+    response = client.delete("/models/spr_pcf_v1")
+    assert response.status_code == 200
+    assert client.get("/models/spr_pcf_v1").status_code == 404
+
+
+def test_delete_unknown_model_is_404(client: TestClient) -> None:
+    assert client.delete("/models/does-not-exist").status_code == 404
+
+
+def test_delete_model_with_jobs_is_conflict(client: TestClient) -> None:
+    register_model(client)
+    client.post("/jobs", json={"model_id": "spr_pcf_v1", "params": {}})
+
+    response = client.delete("/models/spr_pcf_v1")
+    assert response.status_code == 409
+    assert client.get("/models/spr_pcf_v1").status_code == 200  # still there
+
+
 def test_invalid_manifest_is_rejected(client: TestClient) -> None:
     bad = {"model_id": "x"}  # missing required "parameters"
     response = client.post(

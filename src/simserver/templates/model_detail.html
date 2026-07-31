@@ -3,7 +3,14 @@
 {% block content %}
 <h1>{{ model_id }}</h1>
 {% if manifest.description %}<p class="muted">{{ manifest.description }}</p>{% endif %}
+<p class="muted">Owner: {{ owner_username or "—" }}</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+{% if can_manage %}
+<form method="post" action="/ui/models/{{ model_id }}/delete" onsubmit="return confirm('Delete this model? Only works if no jobs reference it.');">
+  <button type="submit" class="secondary">Delete model</button>
+</form>
+{% endif %}
 
 <div class="card">
   <h2>Submit a job</h2>

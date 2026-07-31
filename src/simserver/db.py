@@ -109,7 +109,8 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, dd
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    # jobs already existed (with real data, including on the deployed VM)
-    # before the web client added ownership — CREATE TABLE IF NOT EXISTS
+    # jobs/models already existed (with real data, including on the deployed
+    # VM) before the web client added ownership — CREATE TABLE IF NOT EXISTS
     # can't retrofit a column onto an existing table, so migrate explicitly
     _add_column_if_missing(conn, "jobs", "owner_user_id", "owner_user_id INTEGER REFERENCES users(id)")
+    _add_column_if_missing(conn, "models", "owner_user_id", "owner_user_id INTEGER REFERENCES users(id)")

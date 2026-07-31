@@ -302,3 +302,52 @@ def test_list_jobs_all_vs_owner_filtered(tmp_path: Path) -> None:
 
     alice_jobs = q.list_jobs(conn, owner_user_id=alice)
     assert [j["id"] for j in alice_jobs] == [j_alice]
+
+
+def test_register_model_sets_owner_on_first_insert(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    alice = q.create_user(conn, "alice", "h1")
+    q.register_model(conn, "m1", "models/m1/model.mph", owner_user_id=alice)
+
+    row = q.get_model(conn, "m1")
+    assert row["owner_user_id"] == alice
+
+
+def test_register_model_preserves_owner_on_update(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    alice = q.create_user(conn, "alice", "h1")
+    bob = q.create_user(conn, "bob", "h2")
+    q.register_model(conn, "m1", "models/m1/model.mph", owner_user_id=alice)
+
+    # re-registration (e.g. an admin fixing a manifest) must not silently
+    # transfer ownership to whoever happens to re-register it
+    q.register_model(conn, "m1", "models/m1/model_v2.mph", owner_user_id=bob)
+
+    row = q.get_model(conn, "m1")
+    assert row["owner_user_id"] == alice
+    assert row["path"] == "models/m1/model_v2.mph"  # path/manifest DO update
+
+
+def test_delete_model_removes_unused_model(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+
+    assert q.delete_model(conn, "m1") is True
+    assert q.get_model(conn, "m1") is None
+
+
+def test_delete_model_returns_false_for_unknown_model(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    assert q.delete_model(conn, "does-not-exist") is False
+
+
+def test_delete_model_raises_when_jobs_reference_it(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    q.enqueue_job(conn, "m1", {})
+
+    with pytest.raises(q.ModelInUseError):
+        q.delete_model(conn, "m1")
+
+    # must still exist — the delete must not have partially applied
+    assert q.get_model(conn, "m1") is not None

@@ -112,6 +112,20 @@ def get_model(model_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict
     return json.loads(row["manifest_json"])
 
 
+@app.delete("/models/{model_id}", dependencies=[Depends(require_admin_key)])
+def delete_model(model_id: str, conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    # admin-key only: the JSON API has no per-caller identity to attribute
+    # ownership to, unlike the web client's session-based accounts, so there's
+    # no "researchers can delete their own" concept to enforce here
+    get_model_or_404(conn, model_id)
+    try:
+        q.delete_model(conn, model_id)
+    except q.ModelInUseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    storage.delete_model_files(model_id)
+    return {"model_id": model_id, "deleted": True}
+
+
 @app.post("/jobs", dependencies=[Depends(require_job_key)])
 def create_job(job: JobCreate, conn: sqlite3.Connection = Depends(get_db)) -> dict[str, int]:
     model_row = get_model_or_404(conn, job.model_id)
