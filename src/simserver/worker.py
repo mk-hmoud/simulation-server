@@ -17,6 +17,7 @@ wrong — it's a single Java-side call regardless of how many points there are).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -60,18 +61,6 @@ def _slice_for_point(raw, sweep_index: int, n_points: int) -> list:
     return flat[start : start + per_point]
 
 
-def _resolve_point_value(point_values: list, selected_index: int | None):
-    if len(point_values) == 1:
-        return point_values[0]
-    if selected_index is None:
-        raise BackendError(
-            f"expression returned {len(point_values)} values (per-mode array) but no mode_selection "
-            "is configured in the manifest to pick one",
-            ErrorClass.VALIDATION,
-        )
-    return point_values[selected_index]
-
-
 class Worker:
     def __init__(
         self,
@@ -92,6 +81,7 @@ class Worker:
         self._last_params: dict[str, str] = {}
         self._geometry_params: set[str] = set()
         self._manifest: Manifest | None = None
+        self._manifest_hash: str | None = None
         self._process = psutil.Process(os.getpid())
 
     def _load_model_if_needed(self, model_id: str) -> None:
@@ -103,7 +93,9 @@ class Worker:
         model_row = q.get_model(self.conn, model_id)
         if model_row is None:
             raise BackendError(f"unknown model_id: {model_id!r}", ErrorClass.VALIDATION)
-        self._manifest = Manifest.model_validate(json.loads(model_row["manifest_json"]))
+        manifest_json = model_row["manifest_json"]
+        self._manifest = Manifest.model_validate(json.loads(manifest_json))
+        self._manifest_hash = hashlib.sha256(manifest_json.encode()).hexdigest()[:16]
         self._geometry_params = {
             name for name, spec in self._manifest.parameters.items() if spec.geometry
         }
@@ -148,7 +140,8 @@ class Worker:
 
             t0 = time.monotonic()
             self.backend.solve(self._handle, study=self._manifest.study)
-            print(f"worker {self.worker_id}: job {job.id}: solved ({time.monotonic() - t0:.1f}s)", flush=True)
+            solve_time_s = time.monotonic() - t0
+            print(f"worker {self.worker_id}: job {job.id}: solved ({solve_time_s:.1f}s)", flush=True)
             self._last_params = dict(params_for_set)
 
             n_points = len(raw_sweep_values) if is_sweep else 1
@@ -165,10 +158,15 @@ class Worker:
                 raw_neff = self.backend.evaluate(self._handle, neff_expr)
                 raw_target = self.backend.evaluate(self._handle, mode_selection.neff_target_expression)
 
+            n_modes_seen = 0
             for sweep_index in range(n_points):
                 sweep_value = parse_magnitude(raw_sweep_values[sweep_index]) if is_sweep else None
 
-                selected_index: int | None = None
+                # Advisory mode selection: record WHICH mode the strategy picked
+                # (selected_mode_index), but store EVERY mode below regardless.
+                # Selection is no longer a destructive collapse — keeping all
+                # modes lets the core mode be re-identified offline instead of
+                # re-simulated (dataset-design §9.2.1).
                 if mode_selection is not None:
                     neff_point = _slice_for_point(raw_neff, sweep_index, n_points)
                     target_point = _slice_for_point(raw_target, sweep_index, n_points)
@@ -180,13 +178,35 @@ class Worker:
                         len(neff_point),
                         sweep_index=sweep_index,
                         core_fraction=None,
+                        selected_mode_index=selected_index,
                     )
 
                 for name, raw in raw_outputs.items():
                     point_values = _slice_for_point(raw, sweep_index, n_points)
-                    value = _resolve_point_value(point_values, selected_index)
-                    q.write_result(self.conn, job.id, name, value, sweep_index=sweep_index, sweep_value=sweep_value)
+                    n_modes_seen = max(n_modes_seen, len(point_values))
+                    for mode_index, value in enumerate(point_values):
+                        q.write_result(
+                            self.conn,
+                            job.id,
+                            name,
+                            value,
+                            sweep_index=sweep_index,
+                            mode_index=mode_index,
+                            sweep_value=sweep_value,
+                        )
 
+            q.write_provenance(
+                self.conn,
+                job.id,
+                comsol_version=getattr(self.backend, "comsol_version", None),
+                mph_version=getattr(self.backend, "mph_version", None),
+                manifest_hash=self._manifest_hash,
+                mesh_elements=getattr(self.backend, "last_mesh_elements", None),
+                converged=True,
+                solve_time_s=solve_time_s,
+                n_modes=n_modes_seen or None,
+                backend=type(self.backend).__name__,
+            )
             q.mark_done(self.conn, job.id)
         except BackendError as exc:
             q.mark_failed(self.conn, job.id, exc.error_class.value, str(exc))

@@ -7,7 +7,7 @@ import pytest
 from simserver import db, queue as q
 from simserver.backend import FakeBackend
 from simserver.backend.base import BackendError, ErrorClass
-from simserver.worker import Worker, _resolve_point_value, _slice_for_point
+from simserver.worker import Worker, _slice_for_point
 
 
 def make_worker(tmp_path: Path, **backend_kwargs) -> tuple[Worker, Path]:
@@ -181,7 +181,7 @@ class ArrayBackend:
         self.released.append(handle)
 
 
-def test_process_one_with_mode_selection_writes_selected_mode_result_and_row(tmp_path: Path) -> None:
+def test_process_one_with_mode_selection_stores_all_modes_and_records_selection(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "jobs.db")
     db.init_db(conn)
     model_path = tmp_path / "model.mph"
@@ -206,18 +206,26 @@ def test_process_one_with_mode_selection_writes_selected_mode_result_and_row(tmp
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == "done"
 
-    result = conn.execute(
-        "SELECT value_real FROM results WHERE job_id=? AND output_name='neff_real'", (job_id,)
-    ).fetchone()
-    assert result["value_real"] == 1.44  # index 1, nearest to target 1.45
+    # EVERY mode is stored, not just the selected one (dataset-design §9.2.1)
+    results = conn.execute(
+        "SELECT mode_index, value_real FROM results WHERE job_id=? AND output_name='neff_real' ORDER BY mode_index",
+        (job_id,),
+    ).fetchall()
+    assert [r["mode_index"] for r in results] == [0, 1, 2]
+    assert [r["value_real"] for r in results] == [1.30, 1.44, 1.50]
 
+    # the selection is recorded as advisory metadata, pointing at mode_index 1 (1.44, nearest 1.45)
     mode_rows = q.list_mode_selection(conn, job_id)
     assert len(mode_rows) == 1
     assert mode_rows[0]["strategy"] == "nearest_neff_to_target"
     assert mode_rows[0]["n_modes_considered"] == 3
+    assert mode_rows[0]["selected_mode_index"] == 1
 
 
-def test_process_one_multivalued_output_without_mode_selection_is_validation_error(tmp_path: Path) -> None:
+def test_process_one_multivalued_output_without_mode_selection_stores_all_modes(tmp_path: Path) -> None:
+    # Previously this was a validation error; now that selection is advisory and
+    # all modes are stored, a per-mode output without mode_selection is fine —
+    # the modes are simply persisted unlabelled (dataset-design §9.2.1).
     conn = db.connect(tmp_path / "jobs.db")
     db.init_db(conn)
     model_path = tmp_path / "model.mph"
@@ -229,9 +237,13 @@ def test_process_one_multivalued_output_without_mode_selection_is_validation_err
 
     worker.process_one()
 
-    row = conn.execute("SELECT status, error_class FROM jobs WHERE id=?", (job_id,)).fetchone()
-    assert row["status"] == "failed"
-    assert row["error_class"] == "validation"
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == "done"
+    results = conn.execute(
+        "SELECT mode_index, value_real FROM results WHERE job_id=? ORDER BY mode_index", (job_id,)
+    ).fetchall()
+    assert [r["value_real"] for r in results] == [1.30, 1.44, 1.50]
+    assert q.list_mode_selection(conn, job_id) == []  # no selection recorded
 
 
 def test_slice_for_point_degenerates_to_whole_list_when_one_point() -> None:
@@ -248,18 +260,6 @@ def test_slice_for_point_raises_on_uneven_division() -> None:
     with pytest.raises(BackendError) as exc_info:
         _slice_for_point([1, 2, 3, 4, 5], 0, 2)
     assert exc_info.value.error_class == ErrorClass.INFRASTRUCTURE
-
-
-def test_resolve_point_value_passes_through_single_value_ignoring_index() -> None:
-    assert _resolve_point_value([42.0], selected_index=None) == 42.0
-    assert _resolve_point_value([42.0], selected_index=3) == 42.0  # index irrelevant for non-mode-dependent
-
-
-def test_resolve_point_value_requires_selected_index_for_multivalued() -> None:
-    with pytest.raises(BackendError) as exc_info:
-        _resolve_point_value([1.0, 2.0], selected_index=None)
-    assert exc_info.value.error_class == ErrorClass.VALIDATION
-    assert _resolve_point_value([1.0, 2.0], selected_index=1) == 2.0
 
 
 def test_process_one_sweep_writes_one_result_row_per_point(tmp_path: Path) -> None:
@@ -418,18 +418,23 @@ def _run_sweep_mode_selection_case(tmp_path: Path, *, target_repeated_per_mode: 
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     assert row["status"] == "done"
 
+    # all 3 modes stored for each of the 2 sweep points = 6 rows
     results = conn.execute(
-        "SELECT sweep_index, sweep_value, value_real FROM results WHERE job_id=? ORDER BY sweep_index",
+        "SELECT sweep_index, mode_index, sweep_value, value_real FROM results WHERE job_id=? "
+        "ORDER BY sweep_index, mode_index",
         (job_id,),
     ).fetchall()
-    assert [r["sweep_index"] for r in results] == [0, 1]
-    assert [r["sweep_value"] for r in results] == [0.6, 0.8]
-    assert results[0]["value_real"] == 1.44  # nearest to 1.45 among [1.30, 1.44, 1.50]
-    assert results[1]["value_real"] == 1.46  # nearest to 1.47 among [1.20, 1.46, 1.55]
+    assert [(r["sweep_index"], r["mode_index"]) for r in results] == [
+        (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2),
+    ]
+    assert [r["sweep_value"] for r in results] == [0.6, 0.6, 0.6, 0.8, 0.8, 0.8]
+    assert [r["value_real"] for r in results] == [1.30, 1.44, 1.50, 1.20, 1.46, 1.55]
 
     mode_rows = q.list_mode_selection(conn, job_id)
     assert [r["sweep_index"] for r in mode_rows] == [0, 1]
     assert [r["n_modes_considered"] for r in mode_rows] == [3, 3]
+    # point 0: 1.44 (idx 1) nearest 1.45; point 1: 1.46 (idx 1) nearest 1.47
+    assert [r["selected_mode_index"] for r in mode_rows] == [1, 1]
 
 
 def test_process_one_sweep_with_mode_selection_target_shape_per_point(tmp_path: Path) -> None:
@@ -438,3 +443,44 @@ def test_process_one_sweep_with_mode_selection_target_shape_per_point(tmp_path: 
 
 def test_process_one_sweep_with_mode_selection_target_shape_repeated_per_mode(tmp_path: Path) -> None:
     _run_sweep_mode_selection_case(tmp_path, target_repeated_per_mode=True)
+
+
+def test_process_one_sweep_stores_all_modes_per_point_with_fake_multimode_backend(tmp_path: Path) -> None:
+    # FakeBackend(n_modes=3) returns a 3-mode array per sweep point; with no
+    # mode_selection the worker must persist all of them, keyed by mode_index.
+    conn = db.connect(tmp_path / "jobs.db")
+    db.init_db(conn)
+    model_path = tmp_path / "model.mph"
+    model_path.write_bytes(b"stub")
+    manifest = {
+        "model_id": "m1",
+        "parameters": {"l": {"unit": "um", "min": 0.5, "max": 2.0, "geometry": False}},
+        "sweep_parameter": "l",
+    }
+    q.register_model(conn, "m1", str(model_path), manifest)
+    worker = Worker(conn, FakeBackend(solve_seconds=0, mesh_seconds=0, n_modes=3), worker_id="worker-1")
+    job_id = q.enqueue_job(conn, "m1", {"l": ["0.6[um]", "0.8[um]"]}, outputs={"neff": "real(emw.neff)"})
+
+    worker.process_one()
+
+    rows = conn.execute(
+        "SELECT sweep_index, mode_index FROM results WHERE job_id=? ORDER BY sweep_index, mode_index", (job_id,)
+    ).fetchall()
+    assert [(r["sweep_index"], r["mode_index"]) for r in rows] == [
+        (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2),
+    ]
+
+
+def test_process_one_writes_provenance_row(tmp_path: Path) -> None:
+    worker, _ = make_worker(tmp_path)
+    job_id = q.enqueue_job(worker.conn, "spr_pcf_v1", {"lambda0": "1550[nm]"}, outputs={"neff": "real(ewfd.neff)"})
+
+    worker.process_one()
+
+    prov = q.get_provenance(worker.conn, job_id)
+    assert prov is not None
+    assert prov["backend"] == "FakeBackend"
+    assert prov["converged"] == 1
+    assert prov["solve_time_s"] is not None
+    assert prov["manifest_hash"] is not None
+    assert prov["n_modes"] == 1  # default FakeBackend returns a scalar per point

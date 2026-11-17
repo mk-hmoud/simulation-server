@@ -364,10 +364,19 @@ def job_detail(
     results = q.list_results(conn, job_id)
     mode_selection = q.list_mode_selection(conn, job_id)
 
+    # results now carry a mode_index (all eigenmodes stored, not just the
+    # selected one) — key the chart series by output AND mode so the many modes
+    # don't collapse onto one line
     chart_data: dict[str, list[dict]] = {}
     for row in results:
-        chart_data.setdefault(row["output_name"], []).append(
-            {"sweep_index": row["sweep_index"], "sweep_value": row["sweep_value"], "value_real": row["value_real"]}
+        series = row["output_name"] if row["mode_index"] == 0 else f"{row['output_name']}[mode {row['mode_index']}]"
+        chart_data.setdefault(series, []).append(
+            {
+                "sweep_index": row["sweep_index"],
+                "sweep_value": row["sweep_value"],
+                "mode_index": row["mode_index"],
+                "value_real": row["value_real"],
+            }
         )
     is_sweep = len({row["sweep_index"] for row in results}) > 1
 

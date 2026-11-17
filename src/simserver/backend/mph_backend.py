@@ -122,6 +122,28 @@ class MphBackend:
             self._client = mph.start(cores=self.cores, version=self.version)
         return self._client
 
+    @property
+    def comsol_version(self) -> str | None:
+        """COMSOL version string for run provenance (dataset-design §9.2.3).
+        Best-effort and never fatal: returns the live client's version if a
+        session exists, else the explicitly requested version, else None — the
+        worker records whatever it gets without ever failing a job over it."""
+        try:
+            if self._client is not None:
+                return str(self._client.version)
+        except Exception:
+            pass
+        return self.version
+
+    @property
+    def mph_version(self) -> str | None:
+        try:
+            from importlib.metadata import version
+
+            return version("mph")
+        except Exception:
+            return None
+
     def _run(self, fn: Callable[[], T], phase: str, *, default: ErrorClass) -> T:
         try:
             return fn()

@@ -118,8 +118,11 @@ def cmd_supervisor(args: argparse.Namespace) -> None:
 
 def cmd_results(args: argparse.Namespace) -> None:
     conn = _connect(args)
-    columns = "job_id, output_name, sweep_index, sweep_value, value_real, value_imag"
-    rows = conn.execute(f"SELECT {columns} FROM results WHERE job_id = ? ORDER BY output_name, sweep_index", (args.job_id,))
+    columns = "job_id, output_name, sweep_index, mode_index, sweep_value, value_real, value_imag"
+    rows = conn.execute(
+        f"SELECT {columns} FROM results WHERE job_id = ? ORDER BY output_name, sweep_index, mode_index",
+        (args.job_id,),
+    )
     for row in rows:
         print(dict(row))
 

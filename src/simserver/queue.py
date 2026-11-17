@@ -78,11 +78,16 @@ def enqueue_job(
     outputs: dict[str, str] | None = None,
     priority: int = 0,
     owner_user_id: int | None = None,
+    geometry_group: str | None = None,
 ) -> int:
+    # geometry_group: a stable id shared by every job of the same geometry
+    # (hash of geometry-flagged params + topology), so all (n_a, lambda, mode)
+    # rows of one geometry can be held out together in grouped train/test
+    # splits (dataset-design §9.2.2). Computed by the enqueuing client, not here.
     cur = conn.execute(
-        "INSERT INTO jobs (batch_id, model_id, params_json, outputs_json, status, priority, created_at, owner_user_id) "
-        "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)",
-        (batch_id, model_id, json.dumps(params), json.dumps(outputs or {}), priority, _now(), owner_user_id),
+        "INSERT INTO jobs (batch_id, model_id, params_json, outputs_json, status, priority, created_at, owner_user_id, geometry_group) "
+        "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+        (batch_id, model_id, json.dumps(params), json.dumps(outputs or {}), priority, _now(), owner_user_id, geometry_group),
     )
     return cur.lastrowid
 
@@ -186,8 +191,8 @@ def get_job(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
 
 def list_results(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT output_name, sweep_index, sweep_value, value_real, value_imag "
-        "FROM results WHERE job_id = ? ORDER BY output_name, sweep_index",
+        "SELECT output_name, sweep_index, mode_index, sweep_value, value_real, value_imag "
+        "FROM results WHERE job_id = ? ORDER BY output_name, sweep_index, mode_index",
         (job_id,),
     ).fetchall()
 
@@ -277,6 +282,7 @@ def write_result(
     value: complex | float,
     *,
     sweep_index: int = 0,
+    mode_index: int = 0,
     sweep_value: float | None = None,
 ) -> None:
     if isinstance(value, complex):
@@ -284,9 +290,9 @@ def write_result(
     else:
         value_real, value_imag = float(value), None
     conn.execute(
-        "INSERT INTO results (job_id, output_name, sweep_index, sweep_value, value_real, value_imag) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (job_id, output_name, sweep_index, sweep_value, value_real, value_imag),
+        "INSERT INTO results (job_id, output_name, sweep_index, mode_index, sweep_value, value_real, value_imag) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_id, output_name, sweep_index, mode_index, sweep_value, value_real, value_imag),
     )
 
 
@@ -298,20 +304,53 @@ def write_mode_selection(
     *,
     sweep_index: int = 0,
     core_fraction: float | None = None,
+    selected_mode_index: int | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO mode_selection (job_id, sweep_index, strategy, core_fraction, n_modes_considered) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (job_id, sweep_index, strategy, core_fraction, n_modes_considered),
+        "INSERT INTO mode_selection (job_id, sweep_index, strategy, core_fraction, n_modes_considered, selected_mode_index) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (job_id, sweep_index, strategy, core_fraction, n_modes_considered, selected_mode_index),
     )
 
 
 def list_mode_selection(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT sweep_index, strategy, core_fraction, n_modes_considered FROM mode_selection "
-        "WHERE job_id = ? ORDER BY sweep_index",
+        "SELECT sweep_index, strategy, core_fraction, n_modes_considered, selected_mode_index "
+        "FROM mode_selection WHERE job_id = ? ORDER BY sweep_index",
         (job_id,),
     ).fetchall()
+
+
+def write_provenance(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    comsol_version: str | None = None,
+    mph_version: str | None = None,
+    manifest_hash: str | None = None,
+    mesh_tag: str | None = None,
+    mesh_elements: int | None = None,
+    converged: bool | None = None,
+    solve_time_s: float | None = None,
+    n_modes: int | None = None,
+    backend: str | None = None,
+) -> None:
+    """Record per-job reproducibility + fidelity provenance (dataset-design
+    §9.2.3). One row per job; written once by the worker after a successful
+    solve. Unknown fields (e.g. COMSOL/mph version under a stub backend) are
+    stored as NULL rather than guessed."""
+    conn.execute(
+        "INSERT INTO run_provenance (job_id, comsol_version, mph_version, manifest_hash, mesh_tag, "
+        "mesh_elements, converged, solve_time_s, n_modes, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            job_id, comsol_version, mph_version, manifest_hash, mesh_tag,
+            mesh_elements, None if converged is None else int(converged), solve_time_s, n_modes, backend,
+        ),
+    )
+
+
+def get_provenance(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM run_provenance WHERE job_id = ?", (job_id,)).fetchone()
 
 
 def list_batch_jobs(conn: sqlite3.Connection, batch_id: str) -> list[sqlite3.Row]:
