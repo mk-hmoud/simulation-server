@@ -40,10 +40,36 @@ def test_flattens_scalar_jobs_with_params_and_outputs(tmp_path: Path) -> None:
     q.write_result(conn, j2, "neff_real", 1.45)
 
     rows, fieldnames = batch_dataset_rows(conn, "batch-1")
-    assert fieldnames == ["job_id", "sweep_index", "sweep_value", "p", "neff_real"]
+    assert fieldnames == [
+        "job_id", "geometry_group", "sweep_index", "sweep_value", "mode_index", "is_selected_mode",
+        "p", "neff_real",
+    ]
     assert len(rows) == 2
-    assert rows[0] == {"job_id": j1, "sweep_index": 0, "sweep_value": None, "p": "1.8[um]", "neff_real": 1.44}
-    assert rows[1] == {"job_id": j2, "sweep_index": 0, "sweep_value": None, "p": "2.0[um]", "neff_real": 1.45}
+    assert rows[0] == {
+        "job_id": j1, "geometry_group": None, "sweep_index": 0, "sweep_value": None,
+        "mode_index": 0, "is_selected_mode": None, "p": "1.8[um]", "neff_real": 1.44,
+    }
+    assert rows[1] == {
+        "job_id": j2, "geometry_group": None, "sweep_index": 0, "sweep_value": None,
+        "mode_index": 0, "is_selected_mode": None, "p": "2.0[um]", "neff_real": 1.45,
+    }
+
+
+def test_flatten_carries_geometry_group_and_selected_mode_flag(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    j1 = q.enqueue_job(conn, "m1", {"p": "2.2[um]"}, batch_id="batch-1", geometry_group="geom-abc")
+    # two modes at one sweep point; mode 1 is the selected (core) mode
+    q.write_result(conn, j1, "neff_real", 1.30, sweep_index=0, mode_index=0)
+    q.write_result(conn, j1, "neff_real", 1.44, sweep_index=0, mode_index=1)
+    q.write_mode_selection(conn, j1, "nearest_neff_to_target", 2, sweep_index=0, selected_mode_index=1)
+
+    rows, _ = batch_dataset_rows(conn, "batch-1")
+    by_mode = {r["mode_index"]: r for r in rows}
+    assert by_mode[0]["geometry_group"] == "geom-abc"
+    assert by_mode[1]["geometry_group"] == "geom-abc"
+    assert by_mode[0]["is_selected_mode"] == 0
+    assert by_mode[1]["is_selected_mode"] == 1
 
 
 def test_sweep_job_produces_one_row_per_sweep_index(tmp_path: Path) -> None:

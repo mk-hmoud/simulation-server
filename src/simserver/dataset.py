@@ -2,11 +2,15 @@
 dataframe in one query" is the actual point of the system if it feeds ML
 work — this is that flattening, as CSV.
 
-One row per (job_id, sweep_index): scalar params used by that job (list-
-valued sweep params are excluded — sweep_value already carries that), plus
-one column per output (`<name>`, and `<name>__imag` only if any row in the
-batch actually has a non-null imaginary part for that output, to keep plain
-real-valued datasets clean).
+One row per (job_id, sweep_index, mode_index) — the surrogate-dataset grain
+(dataset-design §9.2.4): every eigenmode the worker stored becomes its own
+row. Each row carries the job's `geometry_group` (so all rows of one geometry
+hold out together in grouped splits) and `is_selected_mode` (1/0 when the
+manifest ran mode_selection, else null), plus the scalar params used by that
+job (list-valued sweep params are excluded — sweep_value already carries
+that), plus one column per output (`<name>`, and `<name>__imag` only if any
+row in the batch actually has a non-null imaginary part for that output, to
+keep plain real-valued datasets clean).
 """
 
 from __future__ import annotations
@@ -34,17 +38,32 @@ def batch_dataset_rows(conn: sqlite3.Connection, batch_id: str) -> tuple[list[di
     param_names: set[str] = set()
     output_names: set[str] = set()
     output_has_imag: set[str] = set()
-    per_point: dict[tuple[int, int], dict] = {}
+    per_point: dict[tuple[int, int, int], dict] = {}
 
     for job in jobs:
         scalar_params = _scalar_params(job["params_json"])
         param_names.update(scalar_params)
+        geometry_group = job["geometry_group"]
+        # which mode the manifest's mode_selection picked, per sweep point
+        # (empty when the model declares no mode_selection)
+        selected_by_index = {
+            r["sweep_index"]: r["selected_mode_index"] for r in q.list_mode_selection(conn, job["id"])
+        }
         for row in q.list_results(conn, job["id"]):
-            key = (job["id"], row["sweep_index"])
-            entry = per_point.setdefault(
-                key,
-                {"job_id": job["id"], "sweep_index": row["sweep_index"], "sweep_value": row["sweep_value"], **scalar_params},
-            )
+            key = (job["id"], row["sweep_index"], row["mode_index"])
+            if key not in per_point:
+                selected = selected_by_index.get(row["sweep_index"])
+                is_selected = None if selected is None else int(row["mode_index"] == selected)
+                per_point[key] = {
+                    "job_id": job["id"],
+                    "geometry_group": geometry_group,
+                    "sweep_index": row["sweep_index"],
+                    "sweep_value": row["sweep_value"],
+                    "mode_index": row["mode_index"],
+                    "is_selected_mode": is_selected,
+                    **scalar_params,
+                }
+            entry = per_point[key]
             entry[row["output_name"]] = row["value_real"]
             output_names.add(row["output_name"])
             if row["value_imag"] is not None:
@@ -60,7 +79,10 @@ def batch_dataset_rows(conn: sqlite3.Connection, batch_id: str) -> tuple[list[di
         if name in output_has_imag:
             output_columns.append(f"{name}__imag")
 
-    fieldnames = ["job_id", "sweep_index", "sweep_value", *sorted(param_names), *output_columns]
+    fieldnames = [
+        "job_id", "geometry_group", "sweep_index", "sweep_value", "mode_index", "is_selected_mode",
+        *sorted(param_names), *output_columns,
+    ]
     rows = [per_point[key] for key in sorted(per_point)]
     return rows, fieldnames
 

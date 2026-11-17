@@ -96,6 +96,54 @@ def test_write_result_splits_complex_value(tmp_path: Path) -> None:
     assert row["value_imag"] == -0.001
 
 
+def test_write_result_records_mode_index(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+
+    q.write_result(conn, job_id, "neff", 1.30, mode_index=0)
+    q.write_result(conn, job_id, "neff", 1.44, mode_index=1)
+    rows = q.list_results(conn, job_id)
+    assert [r["mode_index"] for r in rows] == [0, 1]
+    assert [r["value_real"] for r in rows] == [1.30, 1.44]
+
+
+def test_enqueue_job_records_geometry_group(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {"pitch": "2.2[um]"}, geometry_group="geom-xyz")
+
+    row = conn.execute("SELECT geometry_group FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["geometry_group"] == "geom-xyz"
+
+
+def test_enqueue_job_geometry_group_defaults_to_none(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+
+    row = conn.execute("SELECT geometry_group FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["geometry_group"] is None
+
+
+def test_write_and_read_provenance(tmp_path: Path) -> None:
+    conn = make_conn(tmp_path)
+    q.register_model(conn, "m1", "models/m1/model.mph")
+    job_id = q.enqueue_job(conn, "m1", {})
+
+    q.write_provenance(
+        conn, job_id, comsol_version="6.2", manifest_hash="deadbeef",
+        converged=True, solve_time_s=12.5, n_modes=6, backend="MphBackend",
+    )
+    prov = q.get_provenance(conn, job_id)
+    assert prov["comsol_version"] == "6.2"
+    assert prov["manifest_hash"] == "deadbeef"
+    assert prov["converged"] == 1  # bool coerced to int
+    assert prov["solve_time_s"] == 12.5
+    assert prov["n_modes"] == 6
+    assert prov["mph_version"] is None  # unset field stays NULL, not guessed
+
+
 def test_concurrent_claims_never_double_claim_the_same_job(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs.db"
     setup_conn = db.connect(db_path)
